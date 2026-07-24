@@ -1,0 +1,51 @@
+name: Bug report
+description: Report reproducible AeroDNS behavior.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This report does not contain private DNS history, credentials, or signing material.
+          required: true
+  - type: input
+    attributes:
+      label: AeroDNS version
+      placeholder: "1.5.2"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Android version and device
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: DNS protocol
+      options:
+        - Standard DNS
+        - DNS-over-HTTPS
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
