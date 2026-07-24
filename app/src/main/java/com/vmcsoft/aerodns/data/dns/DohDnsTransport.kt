@@ -1,0 +1,254 @@
+package com.vmcsoft.aerodns.data.dns
+
+import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
+import javax.net.SocketFactory
+import javax.net.ssl.SSLException
+
+@Singleton
+class DohDnsTransport @Inject constructor() {
+
+    var socketProtector: DnsSocketProtector = NoopDnsSocketProtector
+
+    internal var callFactoryBuilder: (
+        upstreamAddresses: List<String>,
+        timeoutMs: Int,
+        socketProtector: DnsSocketProtector
+    ) -> Call.Factory = ::buildCallFactory
+
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val overallTimeoutMs: Long = 5000L
+    private val callFactoryCache = mutableMapOf<CallFactoryCacheKey, Call.Factory>()
+
+    suspend fun query(
+        payload: ByteArray,
+        dohUrl: String,
+        upstreamAddresses: List<String>,
+        timeoutMs: Int,
+        customBootstrapIp: String? = null,
+        allowUntrustedCertificates: Boolean = false
+    ): DnsTransportResult {
+        return withContext(dispatcher) {
+            try {
+                withTimeout(overallTimeoutMs) {
+                    val url = dohUrl.toHttpUrl()
+                    if (!url.isHttps) {
+                        return@withTimeout DnsTransportResult.Error("DNS-over-HTTPS URL must use https")
+                    }
+
+                    val bootstrapAddresses = buildBootstrapAddresses(upstreamAddresses, customBootstrapIp)
+                    if (bootstrapAddresses.isEmpty()) {
+                        return@withTimeout DnsTransportResult.Error("No DoH bootstrap addresses configured")
+                    }
+
+                    DnsDiagnosticLog.d(
+                        TAG,
+                        "doh_query_start url=$url bootstrap=$bootstrapAddresses " +
+                            "payloadBytes=${payload.size} timeoutMs=$timeoutMs"
+                    )
+                    val request = Request.Builder()
+                        .url(url)
+                        .post(payload.toRequestBody(DNS_MESSAGE_MEDIA_TYPE))
+                        .header("Accept", DNS_MESSAGE_CONTENT_TYPE)
+                        .header("Content-Type", DNS_MESSAGE_CONTENT_TYPE)
+                        .header("Accept-Encoding", "identity")
+                        .build()
+
+                    val startTime = System.nanoTime()
+                    val callFactory = if (allowUntrustedCertificates) {
+                        CustomDohUnsafeClientFactory.build(
+                            upstreamAddresses = bootstrapAddresses,
+                            timeoutMs = timeoutMs,
+                            socketProtector = socketProtector,
+                            customBootstrapIp = customBootstrapIp
+                        )
+                    } else {
+                        callFactoryBuilder(bootstrapAddresses, timeoutMs, socketProtector)
+                    }
+                    callFactory
+                        .newCall(request)
+                        .execute()
+                        .use { response ->
+                            response.toDnsTransportResult(startTime)
+                        }
+                }
+            } catch (e: TimeoutCancellationException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=overall timeoutMs=$overallTimeoutMs")
+                DnsTransportResult.Timeout
+            } catch (e: SocketTimeoutException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=socket message=${e.message}")
+                DnsTransportResult.Timeout
+            } catch (e: UnknownHostException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_error kind=unknown_host message=${e.message}")
+                DnsTransportResult.Error("Unknown DoH bootstrap host: ${e.message}")
+            } catch (e: SSLException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_error kind=ssl message=${e.message}", e)
+                DnsTransportResult.Error(DnsSecurityMessages.UNTRUSTED_CERTIFICATE)
+            } catch (e: IOException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_error kind=io message=${e.message}", e)
+                DnsTransportResult.Error("Network error: ${e.message}")
+            } catch (e: IllegalArgumentException) {
+                DnsDiagnosticLog.w(TAG, "doh_query_error kind=invalid_argument message=${e.message}")
+                DnsTransportResult.Error(e.message ?: "Invalid DNS-over-HTTPS URL")
+            } catch (e: Exception) {
+                DnsDiagnosticLog.w(TAG, "doh_query_error kind=unexpected message=${e.message}", e)
+                DnsTransportResult.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    private fun buildCallFactory(
+        upstreamAddresses: List<String>,
+        timeoutMs: Int,
+        socketProtector: DnsSocketProtector
+    ): Call.Factory {
+        val key = CallFactoryCacheKey(
+            upstreamAddresses = upstreamAddresses,
+            timeoutMs = timeoutMs,
+            socketProtector = socketProtector
+        )
+        return synchronized(callFactoryCache) {
+            callFactoryCache.getOrPut(key) {
+                OkHttpClient.Builder()
+                    .dns(CustomDohBootstrapDns(null, upstreamAddresses))
+                    .socketFactory(ProtectedSocketFactory(socketProtector))
+                    .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+                    .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+                    .callTimeout(overallTimeoutMs, TimeUnit.MILLISECONDS)
+                    .retryOnConnectionFailure(true)
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .build()
+            }
+        }
+    }
+
+    private fun Response.toDnsTransportResult(startTime: Long): DnsTransportResult {
+        DnsDiagnosticLog.d(TAG, "doh_http_response protocol=$protocol code=$code successful=$isSuccessful")
+        if (!isSuccessful) {
+            return DnsTransportResult.Error("DoH request failed with HTTP $code")
+        }
+
+        val responsePayload = body?.bytes()
+            ?: return DnsTransportResult.Error("Empty DoH response body")
+        if (responsePayload.isEmpty() || responsePayload.size > MAX_DNS_RESPONSE_SIZE) {
+            return DnsTransportResult.Error("Invalid DoH response size: ${responsePayload.size}")
+        }
+
+        val latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)
+        DnsDiagnosticLog.d(
+            TAG,
+            "doh_query_success protocol=$protocol latencyMs=$latencyMs responseBytes=${responsePayload.size}"
+        )
+        return DnsTransportResult.Success(
+            payload = responsePayload,
+            latencyMs = latencyMs
+        )
+    }
+
+    private fun buildBootstrapAddresses(
+        upstreamAddresses: List<String>,
+        customBootstrapIp: String?
+    ): List<String> {
+        customBootstrapIp?.takeIf { it.isNotBlank() }?.let {
+            return listOf(it)
+        }
+
+        val addresses = upstreamAddresses
+            .filter { it.isNotBlank() }
+            .distinct()
+        val (ipv4Addresses, ipv6Addresses) = addresses.partition { !it.contains(':') }
+        return ipv4Addresses + ipv6Addresses
+    }
+
+    internal class ProtectedSocketFactory(
+        private val socketProtector: DnsSocketProtector
+    ) : SocketFactory() {
+        override fun createSocket(): Socket {
+            return createProtectedSocket()
+        }
+
+        override fun createSocket(host: String, port: Int): Socket {
+            return createSocket().apply {
+                connect(InetSocketAddress(host, port))
+            }
+        }
+
+        override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket {
+            return createProtectedSocket(localHost, localPort).apply {
+                connect(InetSocketAddress(host, port))
+            }
+        }
+
+        override fun createSocket(host: InetAddress, port: Int): Socket {
+            return createSocket().apply {
+                connect(InetSocketAddress(host, port))
+            }
+        }
+
+        override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket {
+            return createProtectedSocket(localAddress, localPort).apply {
+                connect(InetSocketAddress(address, port))
+            }
+        }
+
+        private fun createProtectedSocket(
+            localAddress: InetAddress? = null,
+            localPort: Int = 0
+        ): Socket {
+            return Socket().also { socket ->
+                try {
+                    socket.bind(
+                        if (localAddress == null) {
+                            null
+                        } else {
+                            InetSocketAddress(localAddress, localPort)
+                        }
+                    )
+                    if (!socketProtector.protect(socket)) {
+                        throw IOException("Failed to protect DNS HTTPS socket from VPN")
+                    }
+                    DnsDiagnosticLog.d(TAG, "doh_socket_protected bound=${socket.isBound}")
+                } catch (e: IOException) {
+                    socket.close()
+                    DnsDiagnosticLog.w(TAG, "doh_socket_protect_failed message=${e.message}")
+                    throw e
+                }
+            }
+        }
+    }
+
+    private companion object {
+        private const val TAG = "DohDnsTransport"
+        private const val DNS_MESSAGE_CONTENT_TYPE = "application/dns-message"
+        private val DNS_MESSAGE_MEDIA_TYPE = DNS_MESSAGE_CONTENT_TYPE.toMediaType()
+        private const val MAX_DNS_RESPONSE_SIZE = 65_535
+    }
+
+    private data class CallFactoryCacheKey(
+        val upstreamAddresses: List<String>,
+        val timeoutMs: Int,
+        val socketProtector: DnsSocketProtector
+    )
+}
