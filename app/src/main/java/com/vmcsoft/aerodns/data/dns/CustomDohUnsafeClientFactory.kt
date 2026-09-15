@@ -15,10 +15,9 @@ import javax.net.ssl.X509TrustManager
  */
 object CustomDohUnsafeClientFactory {
     fun build(
-        upstreamAddresses: List<String>,
+        endpoint: DohEndpoint,
         timeoutMs: Int,
-        socketProtector: DnsSocketProtector,
-        customBootstrapIp: String?
+        socketProtector: DnsSocketProtector
     ): OkHttpClient {
         val trustManager = UntrustedCustomDohTrustManager()
         val sslContext = SSLContext.getInstance("TLS").apply {
@@ -26,8 +25,8 @@ object CustomDohUnsafeClientFactory {
         }
 
         return OkHttpClient.Builder()
-            .dns(CustomDohBootstrapDns(customBootstrapIp, upstreamAddresses))
-            .socketFactory(DohDnsTransport.ProtectedSocketFactory(socketProtector))
+            .dns(CustomDohBootstrapDns(endpoint))
+            .socketFactory(DohDnsTransport.ProtectedSocketFactory(socketProtector, endpoint.network))
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .hostnameVerifier(CustomDohHostnameVerifier)
             .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)

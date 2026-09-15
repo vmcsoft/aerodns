@@ -253,7 +253,9 @@ fun CustomDnsDialog(
                         modifier = Modifier.onFocusChanged { bootstrapIpHasFocus = it.hasFocus },
                         label = { Text("Custom Bootstrap IP") },
                         isError = bootstrapIpError != null,
-                        supportingText = bootstrapIpError?.let { { Text(it) } },
+                        supportingText = {
+                            Text(bootstrapIpError ?: "Optional server IP. Without one, your network's DNS looks up the DoH hostname.")
+                        },
                         singleLine = true,
                         placeholder = { Text("203.0.113.10 or 2001:db8::10") }
                     )

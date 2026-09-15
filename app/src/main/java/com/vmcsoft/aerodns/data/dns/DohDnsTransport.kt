@@ -1,5 +1,6 @@
 package com.vmcsoft.aerodns.data.dns
 
+import android.net.Network
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -26,12 +27,14 @@ import javax.net.SocketFactory
 import javax.net.ssl.SSLException
 
 @Singleton
-class DohDnsTransport @Inject constructor() {
+class DohDnsTransport @Inject constructor(
+    private val endpointResolver: DohEndpointResolver
+) {
 
     var socketProtector: DnsSocketProtector = NoopDnsSocketProtector
 
     internal var callFactoryBuilder: (
-        upstreamAddresses: List<String>,
+        endpoint: DohEndpoint,
         timeoutMs: Int,
         socketProtector: DnsSocketProtector
     ) -> Call.Factory = ::buildCallFactory
@@ -57,9 +60,7 @@ class DohDnsTransport @Inject constructor() {
                     }
 
                     val bootstrapAddresses = buildBootstrapAddresses(upstreamAddresses, customBootstrapIp)
-                    if (bootstrapAddresses.isEmpty()) {
-                        return@withTimeout DnsTransportResult.Error("No DoH bootstrap addresses configured")
-                    }
+                    val endpoint = endpointResolver.resolve(url.host, bootstrapAddresses)
 
                     DnsDiagnosticLog.d(
                         TAG,
@@ -77,13 +78,12 @@ class DohDnsTransport @Inject constructor() {
                     val startTime = System.nanoTime()
                     val callFactory = if (allowUntrustedCertificates) {
                         CustomDohUnsafeClientFactory.build(
-                            upstreamAddresses = bootstrapAddresses,
+                            endpoint = endpoint,
                             timeoutMs = timeoutMs,
-                            socketProtector = socketProtector,
-                            customBootstrapIp = customBootstrapIp
+                            socketProtector = socketProtector
                         )
                     } else {
-                        callFactoryBuilder(bootstrapAddresses, timeoutMs, socketProtector)
+                        callFactoryBuilder(endpoint, timeoutMs, socketProtector)
                     }
                     callFactory
                         .newCall(request)
@@ -117,21 +117,28 @@ class DohDnsTransport @Inject constructor() {
         }
     }
 
-    private fun buildCallFactory(
-        upstreamAddresses: List<String>,
+    internal fun buildCallFactory(
+        endpoint: DohEndpoint,
         timeoutMs: Int,
         socketProtector: DnsSocketProtector
     ): Call.Factory {
         val key = CallFactoryCacheKey(
-            upstreamAddresses = upstreamAddresses,
+            endpoint = endpoint,
             timeoutMs = timeoutMs,
             socketProtector = socketProtector
         )
         return synchronized(callFactoryCache) {
+            // Do not retain pooled connections for an old network or an old answer.
+            val obsolete = callFactoryCache.keys.filter {
+                it.endpoint.hostname == endpoint.hostname && it.endpoint != endpoint
+            }
+            obsolete.forEach { oldKey ->
+                (callFactoryCache.remove(oldKey) as? OkHttpClient)?.connectionPool?.evictAll()
+            }
             callFactoryCache.getOrPut(key) {
                 OkHttpClient.Builder()
-                    .dns(CustomDohBootstrapDns(null, upstreamAddresses))
-                    .socketFactory(ProtectedSocketFactory(socketProtector))
+                    .dns(CustomDohBootstrapDns(endpoint))
+                    .socketFactory(ProtectedSocketFactory(socketProtector, endpoint.network))
                     .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
                     .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
                     .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
@@ -183,7 +190,8 @@ class DohDnsTransport @Inject constructor() {
     }
 
     internal class ProtectedSocketFactory(
-        private val socketProtector: DnsSocketProtector
+        private val socketProtector: DnsSocketProtector,
+        private val network: Network? = null
     ) : SocketFactory() {
         override fun createSocket(): Socket {
             return createProtectedSocket()
@@ -229,6 +237,7 @@ class DohDnsTransport @Inject constructor() {
                     if (!socketProtector.protect(socket)) {
                         throw IOException("Failed to protect DNS HTTPS socket from VPN")
                     }
+                    network?.bindSocket(socket)
                     DnsDiagnosticLog.d(TAG, "doh_socket_protected bound=${socket.isBound}")
                 } catch (e: IOException) {
                     socket.close()
@@ -247,7 +256,7 @@ class DohDnsTransport @Inject constructor() {
     }
 
     private data class CallFactoryCacheKey(
-        val upstreamAddresses: List<String>,
+        val endpoint: DohEndpoint,
         val timeoutMs: Int,
         val socketProtector: DnsSocketProtector
     )

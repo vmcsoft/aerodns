@@ -1,5 +1,9 @@
 package com.vmcsoft.aerodns.data.dns
 
+import android.net.Network
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import okhttp3.Call
 import okhttp3.Callback
@@ -13,11 +17,17 @@ import okio.Timeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Test
 import java.io.IOException
 import java.net.DatagramSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.InetAddress
+import java.net.UnknownHostException
+import okhttp3.OkHttpClient
 import javax.net.ssl.SSLException
 
 class DohDnsTransportTest {
@@ -30,9 +40,9 @@ class DohDnsTransportTest {
             responseCode = 200,
             responsePayload = responsePayload
         )
-        val transport = DohDnsTransport().apply {
-            callFactoryBuilder = { upstreamAddresses, timeoutMs, _ ->
-                assertEquals(listOf("1.1.1.1"), upstreamAddresses)
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
+            callFactoryBuilder = { endpoint, timeoutMs, _ ->
+                assertEquals(listOf("1.1.1.1"), endpoint.addresses.map { it.hostAddress })
                 assertEquals(1000, timeoutMs)
                 fakeCallFactory
             }
@@ -60,7 +70,7 @@ class DohDnsTransportTest {
 
     @Test
     fun `query returns error for non-success HTTP status`() = runTest {
-        val transport = DohDnsTransport().apply {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
             callFactoryBuilder = { _, _, _ ->
                 FakeCallFactory(
                     responseCode = 500,
@@ -81,7 +91,7 @@ class DohDnsTransportTest {
 
     @Test
     fun `query returns timeout when OkHttp call times out`() = runTest {
-        val transport = DohDnsTransport().apply {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
             callFactoryBuilder = { _, _, _ ->
                 FakeCallFactory(exception = SocketTimeoutException("timed out"))
             }
@@ -99,7 +109,7 @@ class DohDnsTransportTest {
 
     @Test
     fun `query maps SSL failures to untrusted certificate message`() = runTest {
-        val transport = DohDnsTransport().apply {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
             callFactoryBuilder = { _, _, _ ->
                 FakeCallFactory(exception = SSLException("certificate path failed"))
             }
@@ -125,9 +135,9 @@ class DohDnsTransportTest {
             responseCode = 200,
             responsePayload = byteArrayOf(4, 5, 6)
         )
-        val transport = DohDnsTransport().apply {
-            callFactoryBuilder = { upstreamAddresses, _, _ ->
-                assertEquals(listOf("1.1.1.1", "2606:4700:4700::1111"), upstreamAddresses)
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
+            callFactoryBuilder = { endpoint, _, _ ->
+                assertEquals(listOf("1.1.1.1", "2606:4700:4700:0:0:0:0:1111"), endpoint.addresses.map { it.hostAddress })
                 fakeCallFactory
             }
         }
@@ -143,44 +153,113 @@ class DohDnsTransportTest {
     }
 
     @Test
-    fun `query returns error when bootstrap addresses are empty`() = runTest {
-        val transport = DohDnsTransport()
+    fun `URL-only query uses discovered endpoint and keeps original HTTPS hostname`() = runTest {
+        val resolver = mockk<DohEndpointResolver>()
+        val endpoint = endpoint("dns.google", "8.8.8.8")
+        every { resolver.resolve("dns.google", emptyList()) } returns endpoint
+        val callFactory = FakeCallFactory(responsePayload = byteArrayOf(1, 2, 3))
+        val transport = DohDnsTransport(resolver).apply {
+            callFactoryBuilder = { actualEndpoint, _, _ ->
+                assertEquals(endpoint, actualEndpoint)
+                callFactory
+            }
+        }
 
-        val result = transport.query(
-            payload = byteArrayOf(1, 2, 3),
-            dohUrl = "https://cloudflare-dns.com/dns-query",
-            upstreamAddresses = emptyList(),
-            timeoutMs = 1000
-        )
+        val result = transport.query(byteArrayOf(1), "https://dns.google/dns-query", emptyList(), 1000)
 
+        assertTrue(result is DnsTransportResult.Success)
+        assertEquals("dns.google", callFactory.request!!.url.host)
+        verify(exactly = 1) { resolver.resolve("dns.google", emptyList()) }
+    }
+
+    @Test
+    fun `endpoint discovery failure does not start an HTTPS request or substitute provider`() = runTest {
+        val resolver = mockk<DohEndpointResolver>()
+        every { resolver.resolve(any(), any()) } throws UnknownHostException("unavailable")
+        val transport = DohDnsTransport(resolver).apply {
+            callFactoryBuilder = { _, _, _ -> throw AssertionError("Must not connect") }
+        }
+        val result = transport.query(byteArrayOf(1), "https://dns.example/dns-query", emptyList(), 1000)
         assertTrue(result is DnsTransportResult.Error)
     }
 
     @Test
-    fun `bootstrap DNS maps provider hostname to configured addresses`() {
-        val dns = CustomDohBootstrapDns(
-            customBootstrapIp = null,
-            fallbackBootstrapAddresses = listOf("1.1.1.1", "2606:4700:4700::1111")
+    fun `explicit bootstrap overrides profile addresses`() = runTest {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
+            callFactoryBuilder = { actualEndpoint, _, _ ->
+                assertEquals("resolver.example", actualEndpoint.hostname)
+                assertEquals(listOf("203.0.113.10"), actualEndpoint.addresses.map { it.hostAddress })
+                FakeCallFactory(responsePayload = byteArrayOf(1))
+            }
+        }
+        val result = transport.query(
+            byteArrayOf(1), "https://resolver.example/dns-query", listOf("1.1.1.1"), 1000,
+            customBootstrapIp = "203.0.113.10"
         )
-
-        val result = dns.lookup("cloudflare-dns.com")
-
-        assertEquals("1.1.1.1", result[0].hostAddress)
-        assertEquals("2606:4700:4700:0:0:0:0:1111", result[1].hostAddress)
+        assertTrue(result is DnsTransportResult.Success)
     }
 
     @Test
-    fun `custom bootstrap DNS returns custom IP before fallback addresses`() {
-        val dns = CustomDohBootstrapDns(
-            customBootstrapIp = "203.0.113.10",
-            fallbackBootstrapAddresses = listOf("1.1.1.1")
-        )
-
-        val result = dns.lookup("resolver.glue")
-
-        assertEquals(1, result.size)
-        assertEquals("203.0.113.10", result[0].hostAddress)
+    fun `bootstrap only maps the intended endpoint hostname`() {
+        val dns = CustomDohBootstrapDns(endpoint("resolver.example", "203.0.113.10"))
+        assertEquals("203.0.113.10", dns.lookup("resolver.example").single().hostAddress)
+        assertTrue(runCatching { dns.lookup("unrelated.example") }.exceptionOrNull() is UnknownHostException)
     }
+
+    @Test
+    fun `cached clients change when network or discovered answers change`() {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk()))
+        val wifi = mockk<Network>(name = "wifi")
+        val mobile = mockk<Network>(name = "mobile")
+        val first = endpoint("resolver.example", "203.0.113.10").copy(network = wifi)
+        val wifiClient = transport.buildCallFactory(first, 1000, NoopDnsSocketProtector)
+        assertSame(wifiClient, transport.buildCallFactory(first, 1000, NoopDnsSocketProtector))
+        val mobileEndpoint = first.copy(network = mobile)
+        val mobileClient = transport.buildCallFactory(mobileEndpoint, 1000, NoopDnsSocketProtector)
+        assertNotSame(wifiClient, mobileClient)
+        val changed = endpoint("resolver.example", "203.0.113.11").copy(network = mobile)
+        val changedClient = transport.buildCallFactory(changed, 1000, NoopDnsSocketProtector) as OkHttpClient
+        assertNotSame(mobileClient, changedClient)
+        assertEquals("203.0.113.11", changedClient.dns.lookup("resolver.example").single().hostAddress)
+        // Returning to Wi-Fi must not resurrect the removed pool.
+        assertNotSame(wifiClient, transport.buildCallFactory(first, 1000, NoopDnsSocketProtector))
+    }
+
+    @Test
+    fun `unsafe client uses same endpoint mapping without weakening normal client`() {
+        val endpoint = endpoint("resolver.example", "203.0.113.10")
+        val transport = DohDnsTransport(DohEndpointResolver(mockk()))
+        val normal = transport.buildCallFactory(endpoint, 1000, NoopDnsSocketProtector) as OkHttpClient
+        val unsafe = CustomDohUnsafeClientFactory.build(endpoint, 1000, NoopDnsSocketProtector)
+        assertEquals(normal.dns.lookup(endpoint.hostname), unsafe.dns.lookup(endpoint.hostname))
+        assertNotSame(normal.hostnameVerifier, unsafe.hostnameVerifier)
+        assertSame(normal, transport.buildCallFactory(endpoint, 1000, NoopDnsSocketProtector))
+        assertFalse(normal.followRedirects)
+        assertFalse(unsafe.followRedirects)
+    }
+
+    @Test
+    fun `protected socket binds discovered network after VPN protection and before connect`() {
+        val network = mockk<Network>()
+        var protected = false
+        val protector = object : DnsSocketProtector {
+            override fun protect(socket: DatagramSocket) = true
+            override fun protect(socket: Socket): Boolean {
+                assertTrue(socket.isBound)
+                protected = true
+                return true
+            }
+        }
+        every { network.bindSocket(any<Socket>()) } answers {
+            assertTrue(protected)
+            assertFalse(firstArg<Socket>().isConnected)
+        }
+        DohDnsTransport.ProtectedSocketFactory(protector, network).createSocket().use { }
+        verify(exactly = 1) { network.bindSocket(any<Socket>()) }
+    }
+
+    private fun endpoint(hostname: String, address: String) =
+        DohEndpoint(hostname, listOf(InetAddress.getByName(address)))
 
     @Test
     fun `protected socket factory reports protection failure`() {

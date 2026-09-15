@@ -15,6 +15,7 @@ import com.vmcsoft.aerodns.BuildConfig
 import com.vmcsoft.aerodns.data.dns.DnsForwarder
 import com.vmcsoft.aerodns.data.dns.DnsSocketProtector
 import com.vmcsoft.aerodns.data.dns.DohDnsTransport
+import com.vmcsoft.aerodns.data.dns.DohEndpointResolver
 import com.vmcsoft.aerodns.data.dns.DotDnsTransport
 import com.vmcsoft.aerodns.data.dns.TcpDnsTransport
 import com.vmcsoft.aerodns.data.dns.UdpDnsTransport
@@ -42,7 +43,7 @@ class DnsVpnService : VpnService() {
     private val tcpDnsTransport = TcpDnsTransport().apply {
         socketProtector = VpnServiceDnsSocketProtector()
     }
-    private val dohDnsTransport = DohDnsTransport().apply {
+    private val dohDnsTransport = DohDnsTransport(DohEndpointResolver(this)).apply {
         socketProtector = VpnServiceDnsSocketProtector()
     }
     private val dotDnsTransport = DotDnsTransport().apply {
@@ -170,11 +171,12 @@ class DnsVpnService : VpnService() {
             val builder = Builder()
                 .setSession("AeroDNS")
                 .addAddress(VPN_ADDRESS, 32)  // /32 for single IP, not a subnet
+                // Permit IPv6 passthrough without adding an unrelated IPv6 DNS provider.
+                .allowFamily(OsConstants.AF_INET6)
             for (addr in addresses) {
                 builder.addDnsServer(addr)
             }
             addExperimentalDnsRoutesIfEnabled(builder, dnsConfig)
-            allowIpv6PassthroughIfNeeded(builder, dnsConfig)
 
             // Set MTU
             builder.setMtu(VPN_MTU)
@@ -296,19 +298,6 @@ class DnsVpnService : VpnService() {
             Log.d(TAG, "Added experimental DNS route: $PACKET_LOOP_DNS_ADDRESS/$IPV4_HOST_PREFIX")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to add experimental DNS route: $PACKET_LOOP_DNS_ADDRESS", e)
-        }
-    }
-
-    private fun allowIpv6PassthroughIfNeeded(builder: Builder, dnsConfig: DnsConnectionConfig) {
-        if (!dnsConfig.enableExperimentalPacketLoop) {
-            return
-        }
-
-        try {
-            builder.allowFamily(OsConstants.AF_INET6)
-            Log.d(TAG, "Allowed IPv6 to fall through to the underlying network")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to allow IPv6 passthrough", e)
         }
     }
 

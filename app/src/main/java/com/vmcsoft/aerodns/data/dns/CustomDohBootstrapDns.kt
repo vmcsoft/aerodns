@@ -1,26 +1,15 @@
 package com.vmcsoft.aerodns.data.dns
 
-import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import okhttp3.Dns
 import java.net.InetAddress
+import java.net.UnknownHostException
 
-class CustomDohBootstrapDns(
-    private val customBootstrapIp: String?,
-    private val fallbackBootstrapAddresses: List<String>
-) : Dns {
+/** Maps only this HTTPS endpoint to its configured or discovered IP addresses. */
+class CustomDohBootstrapDns(private val endpoint: DohEndpoint) : Dns {
     override fun lookup(hostname: String): List<InetAddress> {
-        val addresses = customBootstrapIp
-            ?.takeIf { it.isNotBlank() }
-            ?.let { listOf(it) }
-            ?: fallbackBootstrapAddresses
-
-        DnsDiagnosticLog.d(TAG, "doh_bootstrap_lookup hostname=$hostname upstreams=$addresses")
-        return addresses.map { address ->
-            InetAddress.getByName(address)
+        if (!hostname.equals(endpoint.hostname, ignoreCase = true) || endpoint.addresses.isEmpty()) {
+            throw UnknownHostException("No bootstrap addresses for requested DoH endpoint")
         }
-    }
-
-    private companion object {
-        private const val TAG = "CustomDohBootstrapDns"
+        return endpoint.addresses
     }
 }
