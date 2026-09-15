@@ -19,8 +19,8 @@ class TunDnsPacketLoopTest {
 
     @Test
     fun `run writes response for handled DNS packet`() = runTest {
-        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00)
-        val responsePayload = byteArrayOf(0x12, 0x34, 0x81.toByte(), 0x80.toByte())
+        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00).copyOf(12)
+        val responsePayload = byteArrayOf(0x12, 0x34, 0x81.toByte(), 0x80.toByte()).copyOf(12)
         val requestPacket = buildIpv4UdpPacket(
             sourceAddress = CLIENT_ADDRESS,
             destinationAddress = DNS_ADDRESS,
@@ -59,7 +59,7 @@ class TunDnsPacketLoopTest {
             sourcePort = 40_000,
             destinationPort = 123,
             identification = 0x1234,
-            payload = byteArrayOf(0x12, 0x34, 0x01, 0x00)
+            payload = byteArrayOf(0x12, 0x34, 0x01, 0x00).copyOf(12)
         )
         val udpTransport = mockk<UdpDnsTransport>()
         val input = ByteArrayInputStream(requestPacket)

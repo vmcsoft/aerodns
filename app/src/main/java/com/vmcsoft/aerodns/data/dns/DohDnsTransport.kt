@@ -3,6 +3,7 @@ package com.vmcsoft.aerodns.data.dns
 import android.net.Network
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
@@ -14,6 +15,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okio.Buffer
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -95,6 +97,8 @@ class DohDnsTransport @Inject constructor(
             } catch (e: TimeoutCancellationException) {
                 DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=overall timeoutMs=$overallTimeoutMs")
                 DnsTransportResult.Timeout
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: SocketTimeoutException) {
                 DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=socket message=${e.message}")
                 DnsTransportResult.Timeout
@@ -157,11 +161,28 @@ class DohDnsTransport @Inject constructor(
             return DnsTransportResult.Error("DoH request failed with HTTP $code")
         }
 
-        val responsePayload = body?.bytes()
-            ?: return DnsTransportResult.Error("Empty DoH response body")
-        if (responsePayload.isEmpty() || responsePayload.size > MAX_DNS_RESPONSE_SIZE) {
-            return DnsTransportResult.Error("Invalid DoH response size: ${responsePayload.size}")
+        val responseBody = body ?: return DnsTransportResult.Error("Empty DoH response body")
+        val mediaType = responseBody.contentType()
+        if (mediaType?.type != "application" || mediaType.subtype != "dns-message") {
+            return DnsTransportResult.Error("Invalid DoH response content type")
         }
+        val declaredLength = responseBody.contentLength()
+        if (declaredLength == 0L || declaredLength > MAX_DNS_RESPONSE_SIZE) {
+            return DnsTransportResult.Error("Invalid DoH response size: $declaredLength")
+        }
+
+        // Content-Length may be missing or dishonest. Read at most the wire limit
+        // plus one byte, rather than allocating the entire remote body first.
+        val buffer = Buffer()
+        val source = responseBody.source()
+        while (buffer.size <= MAX_DNS_RESPONSE_SIZE) {
+            if (source.read(buffer, MAX_DNS_RESPONSE_SIZE + 1L - buffer.size) == -1L) break
+        }
+        if (buffer.size == 0L || buffer.size > MAX_DNS_RESPONSE_SIZE ||
+            (declaredLength >= 0 && declaredLength != buffer.size)) {
+            return DnsTransportResult.Error("Invalid DoH response size: ${buffer.size}")
+        }
+        val responsePayload = buffer.readByteArray()
 
         val latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)
         DnsDiagnosticLog.d(

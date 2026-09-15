@@ -20,8 +20,8 @@ class TunDnsPacketHandlerTest {
 
     @Test
     fun `handlePacket forwards DNS payload and returns response packet`() = runTest {
-        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00)
-        val responsePayload = byteArrayOf(0x12, 0x34, 0x81.toByte(), 0x80.toByte())
+        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00).copyOf(12)
+        val responsePayload = byteArrayOf(0x12, 0x34, 0x81.toByte(), 0x80.toByte()).copyOf(12)
         val requestPacket = buildIpv4UdpPacket(
             sourceAddress = CLIENT_ADDRESS,
             destinationAddress = DNS_ADDRESS,
@@ -53,7 +53,7 @@ class TunDnsPacketHandlerTest {
 
     @Test
     fun `handlePacket ignores non-DNS packets`() = runTest {
-        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00)
+        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00).copyOf(12)
         val requestPacket = buildIpv4UdpPacket(
             sourceAddress = CLIENT_ADDRESS,
             destinationAddress = DNS_ADDRESS,
@@ -76,7 +76,7 @@ class TunDnsPacketHandlerTest {
 
     @Test
     fun `handlePacket returns null when forwarding fails`() = runTest {
-        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00)
+        val queryPayload = byteArrayOf(0x12, 0x34, 0x01, 0x00).copyOf(12)
         val requestPacket = buildIpv4UdpPacket(
             sourceAddress = CLIENT_ADDRESS,
             destinationAddress = DNS_ADDRESS,
@@ -95,6 +95,21 @@ class TunDnsPacketHandlerTest {
         )
 
         assertNull(responsePacket)
+    }
+
+    @Test
+    fun `unframeable reply is dropped and the next query still succeeds`() = runTest {
+        val query = ByteArray(12).apply { this[0] = 0x12; this[1] = 0x34; this[2] = 1 }
+        val packet = buildIpv4UdpPacket(CLIENT_ADDRESS, DNS_ADDRESS, 40_000, 53, 1, query)
+        val valid = query.copyOf().apply { this[2] = 0x81.toByte() }
+        val forwarder = mockk<DnsForwarder>()
+        coEvery { forwarder.forward(any(), any(), any()) } returnsMany listOf(
+            DnsTransportResult.Success(valid.copyOf(65_535), 1),
+            DnsTransportResult.Success(valid, 1)
+        )
+        val handler = TunDnsPacketHandler(forwarder)
+        assertNull(handler.handlePacket(packet, standardConfig(), 1000))
+        assertArrayEquals(valid, handler.handlePacket(packet, standardConfig(), 1000)!!.copyOfRange(28, 40))
     }
 
     private fun standardConfig(): DnsConnectionConfig {

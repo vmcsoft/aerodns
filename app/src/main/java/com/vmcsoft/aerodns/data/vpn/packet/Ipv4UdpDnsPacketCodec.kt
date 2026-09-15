@@ -2,6 +2,9 @@ package com.vmcsoft.aerodns.data.vpn.packet
 
 object Ipv4UdpDnsPacketCodec {
 
+    fun canFrameResponse(payloadSize: Int): Boolean =
+        payloadSize in 0..(MAX_IPV4_PACKET_SIZE - MIN_IPV4_HEADER_SIZE - UDP_HEADER_SIZE)
+
     fun parseQuery(packet: ByteArray): Ipv4UdpDnsPacket? {
         if (packet.size < MIN_IPV4_HEADER_SIZE + UDP_HEADER_SIZE) return null
 

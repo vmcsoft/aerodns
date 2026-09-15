@@ -97,6 +97,29 @@ class DohEndpointIntegrationTest {
         }
     }
 
+    @Test fun `chunked oversized HTTPS response is isolated and the next request succeeds`() = runBlocking {
+        val cert = HeldCertificate.Builder().addSubjectAlternativeName(HOST).build()
+        MockWebServer().use { server ->
+            // Exercise real HTTP/1.1 chunk framing with no Content-Length.
+            server.protocols = listOf(okhttp3.Protocol.HTTP_1_1)
+            startTls(server, cert)
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/dns-message")
+                .setChunkedBody(Buffer().write(ByteArray(1_000_000)), 4096))
+            val query = DnsWireMessage.buildAQuery(0x1234, "example.com")
+            val reply = query.copyOf().apply { this[2] = 0x81.toByte() }
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/dns-message")
+                .setBody(Buffer().write(reply)))
+            val transport = trustedTransport(DohEndpointResolver(mockk()), cert)
+            val url = "https://$HOST:${server.port}/dns-query"
+            val rejected = transport.query(query, url, listOf("127.0.0.1"), 1000)
+            assertTrue(rejected.toString(), rejected is DnsTransportResult.Error)
+            val recovered = transport.query(query, url, listOf("127.0.0.1"), 1000)
+            assertTrue(recovered.toString(), recovered is DnsTransportResult.Success)
+            assertArrayEquals(reply, (recovered as DnsTransportResult.Success).payload)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
     private fun startTls(server: MockWebServer, cert: HeldCertificate) {
         val certificates = HandshakeCertificates.Builder().heldCertificate(cert).build()
         server.useHttps(certificates.sslSocketFactory(), false)
