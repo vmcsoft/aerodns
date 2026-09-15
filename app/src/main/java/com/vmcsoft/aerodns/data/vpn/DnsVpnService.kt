@@ -7,11 +7,12 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import android.util.Log
 import com.vmcsoft.aerodns.R
-import com.vmcsoft.aerodns.BuildConfig
 import com.vmcsoft.aerodns.data.dns.DnsForwarder
 import com.vmcsoft.aerodns.data.dns.DnsSocketProtector
 import com.vmcsoft.aerodns.data.dns.DohDnsTransport
@@ -24,6 +25,8 @@ import com.vmcsoft.aerodns.data.vpn.packet.TunDnsPacketLoop
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,27 +40,28 @@ class DnsVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val udpDnsTransport = UdpDnsTransport().apply {
-        socketProtector = VpnServiceDnsSocketProtector()
+    private val udpDnsTransport by lazy {
+        UdpDnsTransport().apply { socketProtector = VpnServiceDnsSocketProtector() }
     }
-    private val tcpDnsTransport = TcpDnsTransport().apply {
-        socketProtector = VpnServiceDnsSocketProtector()
+    private val tcpDnsTransport by lazy {
+        TcpDnsTransport().apply { socketProtector = VpnServiceDnsSocketProtector() }
     }
-    private val dohDnsTransport = DohDnsTransport(DohEndpointResolver(this)).apply {
-        socketProtector = VpnServiceDnsSocketProtector()
+    private val dohDnsTransport by lazy {
+        DohDnsTransport(DohEndpointResolver(this)).apply { socketProtector = VpnServiceDnsSocketProtector() }
     }
-    private val dotDnsTransport = DotDnsTransport().apply {
-        socketProtector = VpnServiceDnsSocketProtector()
+    private val dotDnsTransport by lazy {
+        DotDnsTransport().apply { socketProtector = VpnServiceDnsSocketProtector() }
     }
-    private val packetLoop = TunDnsPacketLoop(
+    private val packetLoop by lazy { TunDnsPacketLoop(
         TunDnsPacketHandler(
             DnsForwarder(udpDnsTransport, tcpDnsTransport, dohDnsTransport, dotDnsTransport)
         )
-    )
+    ) }
     private var packetLoopJob: Job? = null
 
     private var currentDnsConfig: DnsConnectionConfig? = null
     private var isForegroundStarted = false
+    private val recoveryStore by lazy { VpnRecoveryStore(this) }
 
     companion object {
         private const val TAG = "DnsVpnService"
@@ -71,6 +75,8 @@ class DnsVpnService : VpnService() {
 
         const val ACTION_CONNECT = "com.vmcsoft.aerodns.ACTION_CONNECT"
         const val ACTION_DISCONNECT = "com.vmcsoft.aerodns.ACTION_DISCONNECT"
+        const val EXTRA_PRESERVE_RECOVERY = "extra_preserve_recovery"
+        const val EXTRA_DISCONNECT_REQUEST_ID = "extra_disconnect_request_id"
         const val EXTRA_DNS_CONFIG = "extra_dns_config"
         const val EXTRA_DNS_SERVER = "extra_dns_server"
         const val EXTRA_DNS_ADDRESSES = "extra_dns_addresses"
@@ -83,40 +89,42 @@ class DnsVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_CONNECT -> handleConnectCommand(intent)
-            ACTION_DISCONNECT -> stopVpn()
-        }
-        return START_STICKY
-    }
-
-    private fun handleConnectCommand(intent: Intent) {
-        val connectSession = DnsVpnForegroundLifecycle.ConnectSession()
-        promoteForegroundConnecting(displayName = null)
-        connectSession.markForegroundPromoted()
-
+        // Every entry may have come from startForegroundService, including system,
+        // malformed and disconnect commands. Promote before parsing or persistence.
         try {
-            val dnsConfig = intent.serializableExtra<DnsConnectionConfig>(EXTRA_DNS_CONFIG)
-                ?: resolveLegacyDnsConfig(intent)
-
-            if (dnsConfig == null) {
-                Log.e(TAG, "No DNS config or legacy DNS server provided")
-                abortConnectStartup(null, "No DNS config provided")
-                return
-            }
-
-            promoteForegroundConnecting(dnsConfig.displayName)
-            startVpn(dnsConfig)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse connect intent", e)
-            abortConnectStartup(null, e.message ?: "Failed to parse connect intent")
-        } finally {
-            if (BuildConfig.DEBUG) {
-                check(connectSession.isValidOnComplete()) {
-                    "startForeground must be called before connect handling completes"
+            promoteForegroundConnecting(currentDnsConfig?.displayName)
+            when (intent?.action) {
+                ACTION_CONNECT -> {
+                    val config = intent.serializableExtra<DnsConnectionConfig>(EXTRA_DNS_CONFIG)
+                        ?: resolveLegacyDnsConfig(intent)
+                    if (config == null) abortConnectStartup(null, "No DNS config provided")
+                    else startVpn(config)
+                }
+                ACTION_DISCONNECT -> {
+                    val requestId = intent.getStringExtra(EXTRA_DISCONNECT_REQUEST_ID)
+                    if (requestId == null || currentDnsConfig?.connectionRequestId == requestId || !isRunning) {
+                        stopVpn(clearRecovery = !intent.getBooleanExtra(EXTRA_PRESERVE_RECOVERY, false))
+                    } else currentDnsConfig?.let(::updateForegroundNotification)
+                }
+                null, SERVICE_INTERFACE -> {
+                    val config = currentDnsConfig ?: recoveryStore.load()?.copy(
+                        connectionRequestId = "restored-${System.nanoTime()}"
+                    )
+                    if (config == null) stopVpn() else startVpn(config)
+                }
+                else -> {
+                    // An unknown command must not restore an inactive connection.
+                    val active = currentDnsConfig
+                    if (isRunning && active != null) {
+                        updateForegroundNotification(active)
+                    } else stopVpn()
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to handle VPN start", e)
+            abortConnectStartup(currentDnsConfig, e.message ?: "Failed to start VPN")
         }
+        return if (isRunning) START_STICKY else START_NOT_STICKY
     }
 
     private fun resolveLegacyDnsConfig(intent: Intent): DnsConnectionConfig? {
@@ -140,21 +148,24 @@ class DnsVpnService : VpnService() {
     }
 
     private fun abortConnectStartup(dnsConfig: DnsConnectionConfig?, message: String) {
-        if (dnsConfig != null) {
-            DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Failed(dnsConfig, message))
-        }
-        stopVpn()
+        stopVpn(emitEvent = false)
+        // Keep failure as the replayed terminal event, rather than replacing it with Stopped.
+        DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Failed(dnsConfig, message))
     }
 
     private fun startVpn(dnsConfig: DnsConnectionConfig) {
-        if (isRunning) {
-            Log.w(TAG, "VPN already running")
+        if (isRunning && currentDnsConfig == dnsConfig) {
             updateForegroundNotification(dnsConfig)
             DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(dnsConfig))
             return
         }
 
         try {
+            validateRecoveryConfig(dnsConfig)
+            check(recoveryStore.save(dnsConfig)) { "Could not save VPN recovery state" }
+            // A new configuration must really replace the interface; never acknowledge
+            // the new provider while continuing to forward through the old one.
+            releaseInterface()
             currentDnsConfig = dnsConfig
 
             val addresses = getVpnDnsAddresses(dnsConfig)
@@ -163,10 +174,6 @@ class DnsVpnService : VpnService() {
                 abortConnectStartup(dnsConfig, "No DNS addresses to add")
                 return
             }
-            if (dnsConfig.protocol != DnsProtocol.STANDARD && !dnsConfig.enableExperimentalPacketLoop) {
-                Log.w(TAG, "Protocol ${dnsConfig.protocol} requires the experimental packet loop; using DNS addresses only")
-            }
-
             // Build VPN interface - DNS ONLY, no traffic routing
             val builder = Builder()
                 .setSession("AeroDNS")
@@ -225,29 +232,40 @@ class DnsVpnService : VpnService() {
         isForegroundStarted = true
     }
 
-    private fun stopVpn() {
+    private fun stopVpn(
+        clearRecovery: Boolean = true,
+        stopService: Boolean = true,
+        emitEvent: Boolean = true
+    ) {
         val stoppedConfig = currentDnsConfig
-        if (!isRunning && stoppedConfig == null && !isForegroundStarted) {
-            return
-        }
-
         try {
-            isRunning = false
-            stopPacketLoop()
-            vpnInterface?.close()
-            vpnInterface = null
-            currentDnsConfig = null
-
-            if (isForegroundStarted) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                isForegroundStarted = false
+            if (clearRecovery && !recoveryStore.clear()) {
+                Log.e(TAG, "Could not persist cleared VPN recovery state")
             }
-            DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Stopped(stoppedConfig))
-            stopSelf()
+        } finally {
+            try {
+                releaseInterface()
+            } finally {
+                currentDnsConfig = null
+                if (isForegroundStarted) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    isForegroundStarted = false
+                }
+                if (emitEvent) DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Stopped(stoppedConfig))
+                if (stopService) stopSelf()
+            }
+        }
+    }
 
-            Log.i(TAG, "VPN stopped")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping VPN", e)
+    private fun releaseInterface() {
+        isRunning = false
+        stopPacketLoop()
+        val oldInterface = vpnInterface
+        vpnInterface = null
+        try {
+            oldInterface?.close()
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "Failed to close VPN interface", e)
         }
     }
 
@@ -267,9 +285,25 @@ class DnsVpnService : VpnService() {
                     mtu = VPN_MTU,
                     timeoutMs = PACKET_LOOP_TIMEOUT_MS
                 )
+                ensureActive()
+                handlePacketLoopFailure(activeInterface, dnsConfig, "DNS forwarding stopped unexpectedly")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Experimental packet loop stopped with error", e)
+                handlePacketLoopFailure(activeInterface, dnsConfig, "DNS forwarding failed: ${e.message}")
             }
+        }
+    }
+
+    private fun handlePacketLoopFailure(
+        failedInterface: ParcelFileDescriptor,
+        config: DnsConnectionConfig,
+        message: String
+    ) {
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            // A cancelled/replaced loop cannot tear down the new connection.
+            if (vpnInterface === failedInterface && isRunning) abortConnectStartup(config, message)
         }
     }
 
@@ -375,9 +409,17 @@ class DnsVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopVpn()
+        // Android may recreate this service. Explicit disconnect/revoke/failure paths
+        // clear the recovery record; lifecycle destruction only releases resources.
+        stopVpn(clearRecovery = false, stopService = false, emitEvent = currentDnsConfig != null)
         serviceScope.cancel()
         Log.d(TAG, "DnsVpnService destroyed")
+    }
+
+    override fun onRevoke() {
+        // Android may invoke onRevoke off the main thread; serialize with start commands.
+        if (Looper.myLooper() == Looper.getMainLooper()) stopVpn()
+        else Handler(Looper.getMainLooper()).post { stopVpn() }
     }
 
     private inline fun <reified T : Serializable> Intent.serializableExtra(key: String): T? {

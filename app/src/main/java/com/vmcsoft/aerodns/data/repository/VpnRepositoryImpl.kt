@@ -5,6 +5,9 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
+import com.vmcsoft.aerodns.data.local.DnsProviderData
+import com.vmcsoft.aerodns.data.vpn.VpnRecoveryStore
+import java.util.concurrent.atomic.AtomicLong
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
@@ -36,21 +39,31 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class VpnRepositoryImpl @Inject constructor(
+class VpnRepositoryImpl internal constructor(
     @ApplicationContext private val context: Context,
     private val networkMonitor: NetworkMonitor,
     private val networkCapabilitiesRepository: NetworkCapabilitiesRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val repositoryScope: CoroutineScope
 ) : VpnRepository {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        networkMonitor: NetworkMonitor,
+        networkCapabilitiesRepository: NetworkCapabilitiesRepository,
+        settingsRepository: SettingsRepository
+    ) : this(context, networkMonitor, networkCapabilitiesRepository, settingsRepository,
+        CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val operationMutex = Mutex()
     private var lastConnectedServer: DnsServer? = null
     private var lastConnectedConfig: DnsConnectionConfig? = null
     private var isReconnecting = false
+    private val userOperation = AtomicLong()
 
     companion object {
         private const val TAG = "VpnRepositoryImpl"
@@ -77,10 +90,26 @@ class VpnRepositoryImpl @Inject constructor(
     private fun handleServiceEvent(event: DnsVpnServiceEvent) {
         when (event) {
             is DnsVpnServiceEvent.Established -> {
-                // connect() owns the successful transition because it still has the DnsServer model.
+                // The command waiter and collector may both receive this event. Do not
+                // revive it after the service has already emitted a newer terminal state.
+                if (DnsVpnServiceEvents.events.replayCache.lastOrNull() !== event) return
+                val config = event.config
+                val pending = lastConnectedConfig
+                if (_connectionState.value is ConnectionState.Connecting && pending != null &&
+                    pending.connectionRequestId != config.connectionRequestId) return
+                val current = _connectionState.value as? ConnectionState.Connected
+                if (current?.activeConfig == config) return
+                val server = lastConnectedServer?.takeIf { it.id == config.serverId }
+                    ?: DnsProviderData.providers.firstOrNull { it.id == config.serverId }
+                    ?: config.toRestoredServer()
+                lastConnectedServer = server
+                lastConnectedConfig = config
+                _connectionState.value = ConnectionState.Connected(server, System.currentTimeMillis(), activeConfig = config)
             }
             is DnsVpnServiceEvent.Failed -> {
-                if (event.config?.connectionRequestId == lastConnectedConfig?.connectionRequestId) {
+                if (event.config?.connectionRequestId == lastConnectedConfig?.connectionRequestId ||
+                    (event.config == null && _connectionState.value is ConnectionState.Connecting)) {
+                    lastConnectedServer = null
                     lastConnectedConfig = null
                     _connectionState.value = ConnectionState.Error(event.message)
                 }
@@ -122,9 +151,11 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     private suspend fun reconnectVpn() {
-        val server = lastConnectedServer ?: return
-
+        val operation = userOperation.get()
         operationMutex.withLock {
+            val server = lastConnectedServer ?: return
+            val activeConfig = lastConnectedConfig ?: return
+            if (_connectionState.value !is ConnectionState.Connected || operation != userOperation.get()) return
             if (isReconnecting) {
                 Log.d(TAG, "Already reconnecting, skipping")
                 return
@@ -136,6 +167,8 @@ class VpnRepositoryImpl @Inject constructor(
                 // Brief delay to allow network to stabilize
                 delay(RECONNECT_DELAY_MS)
 
+                // A newer user action or external service stop supersedes this reconnect.
+                if (operation != userOperation.get() || lastConnectedConfig != activeConfig) return
                 // Check if network is actually available
                 if (!networkMonitor.isNetworkAvailable()) {
                     Log.d(TAG, "Network not available, skipping reconnect")
@@ -146,7 +179,9 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Reconnecting to ${server.name}...")
                 disconnectInternal(clearLastServer = false)
                 delay(RECONNECT_DELAY_MS)
-                connectInternal(server)
+                if (operation != userOperation.get() ||
+                    VpnRecoveryStore(context).load()?.connectionRequestId != activeConfig.connectionRequestId) return
+                connectInternal(server, activeConfig)
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error during reconnect", e)
@@ -157,11 +192,14 @@ class VpnRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun connect(server: DnsServer) = operationMutex.withLock {
-        connectInternal(server)
+    override suspend fun connect(server: DnsServer) {
+        val operation = userOperation.incrementAndGet()
+        operationMutex.withLock {
+            if (operation == userOperation.get()) connectInternal(server)
+        }
     }
 
-    private suspend fun connectInternal(server: DnsServer) {
+    private suspend fun connectInternal(server: DnsServer, restoredConfig: DnsConnectionConfig? = null) {
         if (_connectionState.value is ConnectionState.Connected) {
             disconnectInternal(clearLastServer = true)
         }
@@ -170,9 +208,10 @@ class VpnRepositoryImpl @Inject constructor(
 
         try {
             val stack = networkCapabilitiesRepository.getActiveNetworkIpStack()
-            val selectedProtocol = server.resolveSelectedProtocol(settingsRepository.getSelectedDnsProtocol())
-            val enablePacketLoop = settingsRepository.isExperimentalPacketLoopEnabled() ||
-                selectedProtocol.requiresPacketLoop()
+            val selectedProtocol = restoredConfig?.protocol
+                ?: server.resolveSelectedProtocol(settingsRepository.getSelectedDnsProtocol())
+            val enablePacketLoop = restoredConfig?.enableExperimentalPacketLoop
+                ?: (settingsRepository.isExperimentalPacketLoopEnabled() || selectedProtocol.requiresPacketLoop())
             val dnsConfig = buildDnsConnectionConfig(server, stack, selectedProtocol).getOrElse { error ->
                 Log.e(TAG, "Invalid DNS config for ${server.name} on network $stack", error)
                 _connectionState.value = ConnectionState.Error(
@@ -184,25 +223,22 @@ class VpnRepositoryImpl @Inject constructor(
                 enableExperimentalPacketLoop = enablePacketLoop
             )
             lastConnectedConfig = dnsConfig
+            lastConnectedServer = server
 
             val intent = Intent(context, DnsVpnService::class.java).apply {
                 action = DnsVpnService.ACTION_CONNECT
                 putExtra(DnsVpnService.EXTRA_DNS_CONFIG, dnsConfig)
             }
+            val previousEvent = DnsVpnServiceEvents.events.replayCache.lastOrNull()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
 
-            when (val event = awaitConnectResult(dnsConfig)) {
+            when (val event = awaitConnectResult(dnsConfig, previousEvent)) {
                 is DnsVpnServiceEvent.Established -> {
-                    lastConnectedServer = server
-                    lastConnectedConfig = dnsConfig
-                    _connectionState.value = ConnectionState.Connected(
-                        server = server,
-                        connectedAtMillis = System.currentTimeMillis()
-                    )
+                    handleServiceEvent(event)
 
                     Log.d(TAG, "Connected to ${server.name}")
                 }
@@ -212,6 +248,11 @@ class VpnRepositoryImpl @Inject constructor(
                 }
                 else -> {
                     lastConnectedConfig = null
+                    // Cancel only this timed-out attempt, never a newer service connection.
+                    context.startService(Intent(context, DnsVpnService::class.java).apply {
+                        action = DnsVpnService.ACTION_DISCONNECT
+                        putExtra(DnsVpnService.EXTRA_DISCONNECT_REQUEST_ID, dnsConfig.connectionRequestId)
+                    })
                     _connectionState.value = ConnectionState.Error("VPN connection timed out")
                 }
             }
@@ -222,8 +263,11 @@ class VpnRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun disconnect() = operationMutex.withLock {
-        disconnectInternal(clearLastServer = true)
+    override suspend fun disconnect() {
+        val operation = userOperation.incrementAndGet()
+        operationMutex.withLock {
+            if (operation == userOperation.get()) disconnectInternal(clearLastServer = true)
+        }
     }
 
     private suspend fun disconnectInternal(clearLastServer: Boolean) {
@@ -233,6 +277,7 @@ class VpnRepositoryImpl @Inject constructor(
         try {
             val intent = Intent(context, DnsVpnService::class.java).apply {
                 action = DnsVpnService.ACTION_DISCONNECT
+                putExtra(DnsVpnService.EXTRA_PRESERVE_RECOVERY, !clearLastServer)
             }
             context.startService(intent)
 
@@ -254,14 +299,18 @@ class VpnRepositoryImpl @Inject constructor(
         return VpnService.prepare(context) == null
     }
 
-    private suspend fun awaitConnectResult(config: DnsConnectionConfig): DnsVpnServiceEvent? {
+    private suspend fun awaitConnectResult(
+        config: DnsConnectionConfig,
+        previousEvent: DnsVpnServiceEvent?
+    ): DnsVpnServiceEvent? {
         return withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
             DnsVpnServiceEvents.events.first { event ->
+                if (event === previousEvent) return@first false
                 when (event) {
                     is DnsVpnServiceEvent.Established ->
                         event.config.connectionRequestId == config.connectionRequestId
                     is DnsVpnServiceEvent.Failed ->
-                        event.config?.connectionRequestId == config.connectionRequestId
+                        event.config == null || event.config.connectionRequestId == config.connectionRequestId
                     is DnsVpnServiceEvent.Stopped -> false
                 }
             }
@@ -280,4 +329,16 @@ class VpnRepositoryImpl @Inject constructor(
     private fun buildConnectionRequestId(server: DnsServer): String {
         return "${server.id}-${System.currentTimeMillis()}-${System.nanoTime()}"
     }
+}
+
+private fun DnsConnectionConfig.toRestoredServer(): DnsServer {
+    val ipv4 = upstreamAddresses.filterNot { ':' in it }
+    val ipv6 = upstreamAddresses.filter { ':' in it }
+    return DnsServer(
+        id = serverId, name = displayName, primary = ipv4.firstOrNull().orEmpty(),
+        secondary = ipv4.getOrNull(1), ipv6Primary = ipv6.firstOrNull(), ipv6Secondary = ipv6.getOrNull(1),
+        dohUrl = dohUrl, customBootstrapIp = customBootstrapIp,
+        allowUntrustedCertificates = allowUntrustedCertificates, dotHostname = dotHostname,
+        supportedProtocols = listOf(protocol), isCustom = true
+    )
 }

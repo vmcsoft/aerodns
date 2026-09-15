@@ -6,7 +6,8 @@ sealed class ConnectionState {
     data class Connected(
         val server: DnsServer,
         val connectedAtMillis: Long,
-        val currentPingMs: Long? = null
+        val currentPingMs: Long? = null,
+        val activeConfig: DnsConnectionConfig? = null
     ) : ConnectionState()
     object Disconnecting : ConnectionState()
     data class Error(val message: String) : ConnectionState()
