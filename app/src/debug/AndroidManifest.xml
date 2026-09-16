@@ -4,5 +4,8 @@
     <application
         android:appComponentFactory="com.vmcsoft.aerodns.validation.ValidationComponentFactory"
         tools:replace="android:appComponentFactory"
-        tools:targetApi="28" />
+        tools:targetApi="28">
+        <receiver android:name=".validation.RecoveryControlReceiver"
+            android:exported="true" android:permission="android.permission.DUMP" />
+    </application>
 </manifest>
