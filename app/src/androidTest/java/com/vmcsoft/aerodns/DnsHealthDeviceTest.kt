@@ -97,6 +97,32 @@ class DnsHealthDeviceTest {
         assertFalse(hasVpn())
     }
 
+    @Test fun rapidReplacementsEachPublishHealthyAsTheirFirstResult() = runBlocking {
+        repeat(6) { index ->
+            val config = fixture("health-ok").copy(displayName = "Rapid replacement $index")
+            connect(config)
+            val health = awaitHealth(config)
+            assertTrue("Replacement $index first result: $health", health is DnsHealth.Healthy)
+        }
+    }
+
+    @Test fun droppedFirstProbeRetriesWithinTheInitialHealthCheck() = runBlocking {
+        val config = fixture("health-drop-first")
+        connect(config)
+        val health = awaitHealth(config)
+        assertTrue("First result must recover the dropped query: $health", health is DnsHealth.Healthy)
+        assertEquals(2, fixtureQueryCount(config))
+    }
+
+    @Test fun silentResolverHasOnlyOneRetryAndStillReportsUnhealthy() = runBlocking {
+        val config = fixture("health-drop-all")
+        connect(config)
+        val health = awaitHealth(config)
+        assertTrue(health.toString(), health is DnsHealth.Unhealthy)
+        assertEquals(2, fixtureQueryCount(config))
+        assertTrue(hasVpn())
+    }
+
     @Test fun notificationMatchesCheckingHealthyAndFailedServiceSnapshots() = runBlocking {
         assumeTrue("Enable notifications for the validation app to verify notification delivery", notifications.areNotificationsEnabled())
         val config = fixture("health-slow")
@@ -141,6 +167,15 @@ class DnsHealthDeviceTest {
             while (hasVpn() || notifications.activeNotifications.any { it.id == 1001 }) delay(50)
         }
         assertTrue(context.getSharedPreferences("vpn_recovery", Context.MODE_PRIVATE).all.isEmpty())
+    }
+
+    private suspend fun fixtureQueryCount(config: DnsConnectionConfig): Int {
+        val result = DohDnsTransport(DohEndpointResolver(context)).query(
+            DnsWireMessage.buildAQuery(42, "count.fixture.test"), requireNotNull(config.dohUrl),
+            emptyList(), 1000, "127.0.0.1", true
+        )
+        assertTrue(result.toString(), result is DnsTransportResult.Success)
+        return (result as DnsTransportResult.Success).payload.last().toInt() and 0xff
     }
 
     private fun fixture(path: String): DnsConnectionConfig {

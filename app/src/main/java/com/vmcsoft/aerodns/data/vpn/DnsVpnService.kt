@@ -170,11 +170,17 @@ class DnsVpnService : VpnService() {
             return
         }
 
+        var retiredInterface: ParcelFileDescriptor? = null
         try {
             validateRecoveryConfig(dnsConfig)
             check(recoveryStore.save(dnsConfig)) { "Could not save VPN recovery state" }
             // A new configuration must really replace the interface; never acknowledge
             // the new provider while continuing to forward through the old one.
+            // Keep the old descriptor alive until establish() completes the handover.
+            // Closing it first lets Android reuse its interface name while old routing
+            // is still visible, so a newly bound probe can send into stale routes.
+            retiredInterface = vpnInterface
+            vpnInterface = null
             releaseInterface()
             currentDnsConfig = dnsConfig
 
@@ -230,6 +236,9 @@ class DnsVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error starting VPN", e)
             abortConnectStartup(dnsConfig, e.message ?: "Failed to start VPN")
+        } finally {
+            try { retiredInterface?.close() }
+            catch (e: java.io.IOException) { Log.w(TAG, "Failed to close retired VPN interface", e) }
         }
     }
 

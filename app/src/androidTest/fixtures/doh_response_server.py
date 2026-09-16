@@ -53,6 +53,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             header = query[:2] + struct.pack("!5H", 0x8182 if failed else 0x8180, 1, 0 if failed else 1, 0, 0)
             answer = b"" if failed else struct.pack("!HHHIH4B", 0xC00C, 1, 1, 60, 4, 93, 184, 216, 34)
             body = header + query[12:] + answer
+            if self.path.startswith("/health-drop-all") or (self.path.startswith("/health-drop-first") and count == 1):
+                body = b"bad"  # Rejected upstream payload: no UDP response reaches the probe.
+        if name == "count":
+            with self.health_lock:
+                count = min(255, self.health_counts.get(self.path, 0))
+            body = (query[:2] + struct.pack("!5H", 0x8180, 1, 1, 0, 0) + query[12:] +
+                    struct.pack("!HHHIH4B", 0xC00C, 1, 1, 0, 4, 0, 0, 0, count))
         if name == "inflight":
             with self.health_lock:
                 count = min(255, Handler.slow_inflight)
