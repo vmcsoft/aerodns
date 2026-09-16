@@ -15,6 +15,7 @@ import com.vmcsoft.aerodns.data.vpn.NetworkMonitor
 import com.vmcsoft.aerodns.data.vpn.NetworkState
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
+import com.vmcsoft.aerodns.domain.model.DnsHealth
 import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.domain.model.buildDnsConnectionConfig
 import com.vmcsoft.aerodns.domain.model.requiresPacketLoop
@@ -26,6 +27,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +57,7 @@ class VpnRepositoryImpl internal constructor(
         networkCapabilitiesRepository: NetworkCapabilitiesRepository,
         settingsRepository: SettingsRepository
     ) : this(context, networkMonitor, networkCapabilitiesRepository, settingsRepository,
-        CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     override val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -93,18 +96,27 @@ class VpnRepositoryImpl internal constructor(
                 // The command waiter and collector may both receive this event. Do not
                 // revive it after the service has already emitted a newer terminal state.
                 if (DnsVpnServiceEvents.events.replayCache.lastOrNull() !== event) return
+                if (_connectionState.value is ConnectionState.Disconnecting) return
                 val config = event.config
                 val pending = lastConnectedConfig
                 if (_connectionState.value is ConnectionState.Connecting && pending != null &&
                     pending.connectionRequestId != config.connectionRequestId) return
                 val current = _connectionState.value as? ConnectionState.Connected
-                if (current?.activeConfig == config) return
+                // A completed probe belongs only to its established interface. A fresh
+                // repository may adopt the latest service snapshot after restoration.
+                if (current != null && current.activeConfig != config && event.health != DnsHealth.Checking) return
+                if (current?.activeConfig == config && current.dnsHealth == event.health) return
                 val server = lastConnectedServer?.takeIf { it.id == config.serverId }
                     ?: DnsProviderData.providers.firstOrNull { it.id == config.serverId }
                     ?: config.toRestoredServer()
                 lastConnectedServer = server
                 lastConnectedConfig = config
-                _connectionState.value = ConnectionState.Connected(server, System.currentTimeMillis(), activeConfig = config)
+                _connectionState.value = ConnectionState.Connected(
+                    server,
+                    current?.takeIf { it.activeConfig == config }?.connectedAtMillis ?: System.currentTimeMillis(),
+                    currentPingMs = (event.health as? DnsHealth.Healthy)?.latencyMs,
+                    activeConfig = config, dnsHealth = event.health
+                )
             }
             is DnsVpnServiceEvent.Failed -> {
                 if (event.config?.connectionRequestId == lastConnectedConfig?.connectionRequestId ||
@@ -194,8 +206,11 @@ class VpnRepositoryImpl internal constructor(
 
     override suspend fun connect(server: DnsServer) {
         val operation = userOperation.incrementAndGet()
-        operationMutex.withLock {
-            if (operation == userOperation.get()) connectInternal(server)
+        // Serialize state mutations with service events, while keeping the caller's cancellation.
+        withContext(repositoryScope.coroutineContext.minusKey(Job)) {
+            operationMutex.withLock {
+                if (operation == userOperation.get()) connectInternal(server)
+            }
         }
     }
 
@@ -265,8 +280,11 @@ class VpnRepositoryImpl internal constructor(
 
     override suspend fun disconnect() {
         val operation = userOperation.incrementAndGet()
-        operationMutex.withLock {
-            if (operation == userOperation.get()) disconnectInternal(clearLastServer = true)
+        // Serialize state mutations with service events, while keeping the caller's cancellation.
+        withContext(repositoryScope.coroutineContext.minusKey(Job)) {
+            operationMutex.withLock {
+                if (operation == userOperation.get()) disconnectInternal(clearLastServer = true)
+            }
         }
     }
 

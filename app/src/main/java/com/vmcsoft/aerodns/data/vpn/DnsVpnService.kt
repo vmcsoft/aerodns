@@ -25,6 +25,8 @@ import com.vmcsoft.aerodns.data.vpn.packet.TunDnsPacketLoop
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
+import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.statusDescription
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +35,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 import java.io.Serializable
 
 class DnsVpnService : VpnService() {
@@ -58,9 +63,13 @@ class DnsVpnService : VpnService() {
         )
     ) }
     private var packetLoopJob: Job? = null
+    private var healthJob: Job? = null
+    private var currentHealth: DnsHealth = DnsHealth.Checking
+    private val healthProbe by lazy { RuntimeDnsHealthProbe(this) }
 
     private var currentDnsConfig: DnsConnectionConfig? = null
     private var isForegroundStarted = false
+    private var lastStartId = 0
     private val recoveryStore by lazy { VpnRecoveryStore(this) }
 
     companion object {
@@ -89,6 +98,7 @@ class DnsVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         // Every entry may have come from startForegroundService, including system,
         // malformed and disconnect commands. Promote before parsing or persistence.
         try {
@@ -156,7 +166,7 @@ class DnsVpnService : VpnService() {
     private fun startVpn(dnsConfig: DnsConnectionConfig) {
         if (isRunning && currentDnsConfig == dnsConfig) {
             updateForegroundNotification(dnsConfig)
-            DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(dnsConfig))
+            DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(dnsConfig, currentHealth))
             return
         }
 
@@ -213,6 +223,7 @@ class DnsVpnService : VpnService() {
             updateForegroundNotification(dnsConfig)
             startPacketLoopIfEnabled(dnsConfig)
             DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(dnsConfig))
+            startHealthChecks(dnsConfig)
 
             Log.i(TAG, "VPN started with DNS: ${dnsConfig.displayName} (${dnsConfig.protocol}, $addresses)")
 
@@ -251,14 +262,19 @@ class DnsVpnService : VpnService() {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     isForegroundStarted = false
                 }
+                // A newer start may already be queued in ActivityManager, before
+                // onStartCommand receives it. Never destroy that pending connection.
+                if (stopService) stopSelfResult(lastStartId)
                 if (emitEvent) DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Stopped(stoppedConfig))
-                if (stopService) stopSelf()
             }
         }
     }
 
     private fun releaseInterface() {
         isRunning = false
+        healthJob?.cancel()
+        healthJob = null
+        currentHealth = DnsHealth.Checking
         stopPacketLoop()
         val oldInterface = vpnInterface
         vpnInterface = null
@@ -310,6 +326,24 @@ class DnsVpnService : VpnService() {
     private fun stopPacketLoop() {
         packetLoopJob?.cancel()
         packetLoopJob = null
+    }
+
+    private fun startHealthChecks(config: DnsConnectionConfig) {
+        val activeInterface = vpnInterface ?: return
+        healthJob = serviceScope.launch {
+            while (isActive) {
+                val health = healthProbe.check(config)
+                withContext(Dispatchers.Main.immediate) {
+                    // Results from a replaced or disconnected interface cannot alter its successor.
+                    if (isRunning && vpnInterface === activeInterface && currentDnsConfig == config) {
+                        currentHealth = health
+                        updateForegroundNotification(config)
+                        DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(config, health))
+                    }
+                }
+                delay(30_000)
+            }
+        }
     }
 
     private inner class VpnServiceDnsSocketProtector : DnsSocketProtector {
@@ -394,7 +428,7 @@ class DnsVpnService : VpnService() {
         }
         return builder
             .setContentTitle("AeroDNS Active")
-            .setContentText("Connected to ${dnsConfig.displayName}")
+            .setContentText(dnsConfig.statusDescription(currentHealth))
             .setSmallIcon(R.drawable.ic_vpn_key)
             .addAction(
                 Notification.Action.Builder(

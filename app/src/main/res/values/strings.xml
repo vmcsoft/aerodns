@@ -4,7 +4,6 @@
 
     <!-- Quick Settings Tile -->
     <string name="tile_label">AeroDNS</string>
-    <string name="tile_connected">Connected to %s</string>
     <string name="tile_disconnected">Tap to connect</string>
     <string name="tile_unavailable">No DNS selected</string>
 </resources>

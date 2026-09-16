@@ -6,19 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
-import com.vmcsoft.aerodns.domain.model.NetworkIpStack
 import com.vmcsoft.aerodns.domain.model.SpeedTestResult
-import com.vmcsoft.aerodns.domain.model.buildDnsConnectionConfig
 import com.vmcsoft.aerodns.domain.model.resolveSelectedProtocol
 import com.vmcsoft.aerodns.domain.model.selectableProtocols
-import com.vmcsoft.aerodns.domain.repository.NetworkCapabilitiesRepository
 import com.vmcsoft.aerodns.domain.repository.VpnRepository
 import com.vmcsoft.aerodns.domain.usecase.DeleteCustomDnsUseCase
 import com.vmcsoft.aerodns.domain.usecase.GetDnsListUseCase
-import com.vmcsoft.aerodns.data.vpn.NetworkPinger
-import com.vmcsoft.aerodns.data.vpn.PingResult
-import com.vmcsoft.aerodns.data.dns.DnsSecurityMessages
-import com.vmcsoft.aerodns.domain.usecase.PingDnsServerUseCase
 import com.vmcsoft.aerodns.domain.usecase.RunSpeedTestUseCase
 import com.vmcsoft.aerodns.domain.usecase.SaveCustomDnsUseCase
 import com.vmcsoft.aerodns.domain.usecase.UpdateCustomDnsUseCase
@@ -31,7 +24,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -44,16 +36,11 @@ class DashboardViewModel @Inject constructor(
     private val saveCustomDnsUseCase: SaveCustomDnsUseCase,
     private val updateCustomDnsUseCase: UpdateCustomDnsUseCase,
     private val deleteCustomDnsUseCase: DeleteCustomDnsUseCase,
-    private val pingDnsServerUseCase: PingDnsServerUseCase,
-    private val networkPinger: NetworkPinger,
-    private val networkCapabilitiesRepository: NetworkCapabilitiesRepository,
     private val preferencesDataStore: com.vmcsoft.aerodns.data.local.PreferencesDataStore
 ) : ViewModel() {
 
     companion object {
         private const val TAG = "DashboardViewModel"
-        private const val PING_INTERVAL_MS = 10_000L
-        private const val CUSTOM_DNS_VALIDATION_TIMEOUT_MS = 3_000
     }
 
     val connectionState: StateFlow<ConnectionState> = vpnRepository.connectionState
@@ -85,22 +72,12 @@ class DashboardViewModel @Inject constructor(
     private val _serverToDelete = MutableStateFlow<DnsServer?>(null)
     val serverToDelete: StateFlow<DnsServer?> = _serverToDelete.asStateFlow()
 
-    private val _currentPingMs = MutableStateFlow<Long?>(null)
-    val currentPingMs: StateFlow<Long?> = _currentPingMs.asStateFlow()
-
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
-
-    private val _isValidatingDns = MutableStateFlow(false)
-    val isValidatingDns: StateFlow<Boolean> = _isValidatingDns.asStateFlow()
-
-    private val _validationError = MutableStateFlow<String?>(null)
-    val validationError: StateFlow<String?> = _validationError.asStateFlow()
 
     private val _experimentalPacketLoopEnabled = MutableStateFlow(false)
     val experimentalPacketLoopEnabled: StateFlow<Boolean> = _experimentalPacketLoopEnabled.asStateFlow()
 
-    private var pingJob: Job? = null
     private var speedTestJob: Job? = null
 
     init {
@@ -114,17 +91,12 @@ class DashboardViewModel @Inject constructor(
             connectionState.collect { state ->
                 when (state) {
                     is ConnectionState.Connected -> {
-                        startPingMonitoring(state.server)
                         _errorMessage.value = null
-                        _validationError.value = null
                     }
                     is ConnectionState.Error -> {
-                        stopPingMonitoring()
                         _errorMessage.value = state.message
                     }
-                    else -> {
-                        stopPingMonitoring()
-                    }
+                    else -> Unit
                 }
             }
         }
@@ -132,10 +104,6 @@ class DashboardViewModel @Inject constructor(
 
     fun clearError() {
         _errorMessage.value = null
-    }
-
-    fun clearValidationError() {
-        _validationError.value = null
     }
 
     private fun loadExperimentalPacketLoopSetting() {
@@ -154,138 +122,6 @@ class DashboardViewModel @Inject constructor(
             } else {
                 "Experimental packet loop disabled. Reconnect VPN to apply."
             }
-        }
-    }
-
-    /**
-     * Validates that a custom DNS server answers DNS queries before connecting.
-     * Returns true if the resolver is usable, false otherwise.
-     * Sets error message if validation fails.
-     */
-    private suspend fun validateCustomDnsConnectivity(server: DnsServer): Boolean {
-        if (!server.isCustom) {
-            // Skip validation for predefined servers (they're trusted)
-            return true
-        }
-
-        val stack = networkCapabilitiesRepository.getActiveNetworkIpStack()
-        val protocol = server.resolveSelectedProtocol(_selectedProtocol.value)
-        return if (protocol == DnsProtocol.DOH) {
-            validateCustomDohConnectivity(server, stack)
-        } else {
-            validateCustomStandardDnsConnectivity(server, stack)
-        }
-    }
-
-    private suspend fun validateCustomStandardDnsConnectivity(
-        server: DnsServer,
-        stack: NetworkIpStack
-    ): Boolean {
-        val dnsAddress = getCustomValidationAddresses(server, stack).firstOrNull()
-        if (dnsAddress.isNullOrBlank()) {
-            _validationError.value = "Invalid DNS server address"
-            return false
-        }
-
-        Log.d(TAG, "Validating custom DNS connectivity: ${server.name} ($dnsAddress)")
-        _isValidatingDns.value = true
-        _validationError.value = null
-
-        return try {
-            when (
-                val result = networkPinger.measureDnsQueryLatency(
-                    ipAddress = dnsAddress,
-                    timeoutMs = CUSTOM_DNS_VALIDATION_TIMEOUT_MS
-                )
-            ) {
-                is PingResult.Success -> {
-                    Log.d(TAG, "DNS server answered query: ${result.latencyMs}ms")
-                    _validationError.value = null
-                    true
-                }
-                is PingResult.Timeout -> {
-                    Log.w(TAG, "DNS query timeout: $dnsAddress")
-                    _validationError.value = "DNS server \"${server.name}\" did not answer DNS queries. Please check that DNS is running on port 53."
-                    false
-                }
-                is PingResult.Error -> {
-                    Log.w(TAG, "DNS query error: ${result.message}")
-                    _validationError.value = "Cannot connect to DNS server \"${server.name}\": ${result.message}"
-                    false
-                }
-            }
-        } finally {
-            _isValidatingDns.value = false
-        }
-    }
-
-    private suspend fun validateCustomDohConnectivity(
-        server: DnsServer,
-        stack: NetworkIpStack
-    ): Boolean {
-        val dnsConfig = buildDnsConnectionConfig(server, stack, DnsProtocol.DOH).getOrElse { error ->
-            _validationError.value = error.message ?: "Invalid DNS-over-HTTPS configuration"
-            return false
-        }
-        val dohUrl = dnsConfig.dohUrl
-        if (dohUrl.isNullOrBlank()) {
-            _validationError.value = "Invalid DNS-over-HTTPS URL"
-            return false
-        }
-
-        Log.d(TAG, "Validating custom DoH connectivity: ${server.name} ($dohUrl)")
-        _isValidatingDns.value = true
-        _validationError.value = null
-
-        return try {
-            when (
-                val result = networkPinger.measureDohQueryLatency(
-                    dohUrl = dohUrl,
-                    upstreamAddresses = dnsConfig.upstreamAddresses,
-                    timeoutMs = CUSTOM_DNS_VALIDATION_TIMEOUT_MS,
-                    customBootstrapIp = dnsConfig.customBootstrapIp,
-                    allowUntrustedCertificates = dnsConfig.allowUntrustedCertificates
-                )
-            ) {
-                is PingResult.Success -> {
-                    Log.d(TAG, "DoH server answered query: ${result.latencyMs}ms")
-                    _validationError.value = null
-                    true
-                }
-                is PingResult.Timeout -> {
-                    Log.w(TAG, "DoH query timeout: $dohUrl")
-                    _validationError.value = "DNS-over-HTTPS server \"${server.name}\" did not answer DNS queries."
-                    false
-                }
-                is PingResult.Error -> {
-                    Log.w(TAG, "DoH query error: ${result.message}")
-                    _validationError.value = if (result.message == DnsSecurityMessages.UNTRUSTED_CERTIFICATE) {
-                        DnsSecurityMessages.UNTRUSTED_CERTIFICATE
-                    } else {
-                        "Cannot connect to DNS-over-HTTPS server \"${server.name}\": ${result.message}"
-                    }
-                    false
-                }
-            }
-        } finally {
-            _isValidatingDns.value = false
-        }
-    }
-
-    private fun getCustomValidationAddresses(server: DnsServer, stack: NetworkIpStack): List<String> {
-        val ipv4Addresses = listOfNotNull(
-            server.primary.takeIf { it.isNotBlank() },
-            server.secondary
-        )
-        val ipv6Addresses = listOfNotNull(
-            server.ipv6Primary,
-            server.ipv6Secondary
-        )
-
-        return when (stack) {
-            NetworkIpStack.IPv6_ONLY -> ipv6Addresses.ifEmpty { ipv4Addresses }
-            NetworkIpStack.IPv4_ONLY,
-            NetworkIpStack.DUAL_STACK -> ipv4Addresses.ifEmpty { ipv6Addresses }
         }
     }
 
@@ -328,11 +164,7 @@ class DashboardViewModel @Inject constructor(
                 }
                 is ConnectionState.Disconnected, is ConnectionState.Error -> {
                     _selectedServer.value?.let { server ->
-                        _validationError.value = null // Clear any previous validation errors
-                        // Validate custom DNS before connecting
-                        if (validateCustomDnsConnectivity(server)) {
-                            vpnRepository.connect(server)
-                        }
+                        vpnRepository.connect(server)
                     }
                 }
                 is ConnectionState.Disconnecting -> {
@@ -347,7 +179,6 @@ class DashboardViewModel @Inject constructor(
         val resolvedProtocol = resolveProtocolForServer(server)
         _selectedProtocol.value = resolvedProtocol
         _showDnsSelector.value = false
-        _validationError.value = null // Clear any previous validation errors
 
         viewModelScope.launch {
             preferencesDataStore.setSelectedDnsId(server.id)
@@ -355,12 +186,9 @@ class DashboardViewModel @Inject constructor(
 
             // If already connected, reconnect with new server
             if (connectionState.value is ConnectionState.Connected) {
-                // Validate custom DNS before connecting
-                if (validateCustomDnsConnectivity(server)) {
-                    vpnRepository.disconnect()
-                    delay(500)
-                    vpnRepository.connect(server)
-                }
+                vpnRepository.disconnect()
+                delay(500)
+                vpnRepository.connect(server)
             }
         }
     }
@@ -369,22 +197,18 @@ class DashboardViewModel @Inject constructor(
         _selectedServer.value = server
         val resolvedProtocol = resolveProtocolForServer(server)
         _selectedProtocol.value = resolvedProtocol
-        _validationError.value = null // Clear any previous validation errors
 
         viewModelScope.launch {
             preferencesDataStore.setSelectedDnsId(server.id)
             preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
             // Always connect to the selected server
-            // Validate custom DNS before connecting
-            if (validateCustomDnsConnectivity(server)) {
-                // If already connected, disconnect first
-                if (connectionState.value is ConnectionState.Connected) {
-                    vpnRepository.disconnect()
-                    delay(500)
-                }
-                vpnRepository.connect(server)
+            // If already connected, disconnect first
+            if (connectionState.value is ConnectionState.Connected) {
+                vpnRepository.disconnect()
+                delay(500)
             }
+            vpnRepository.connect(server)
         }
     }
 
@@ -412,11 +236,9 @@ class DashboardViewModel @Inject constructor(
             preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
             if (connectionState.value is ConnectionState.Connected) {
-                if (validateCustomDnsConnectivity(server)) {
-                    vpnRepository.disconnect()
-                    delay(500)
-                    vpnRepository.connect(server)
-                }
+                vpnRepository.disconnect()
+                delay(500)
+                vpnRepository.connect(server)
             }
         }
     }
@@ -549,7 +371,6 @@ class DashboardViewModel @Inject constructor(
                 _showCustomDnsDialog.value = false
                 _serverToEdit.value = null
                 _errorMessage.value = null
-                _validationError.value = null // Clear any previous validation errors
 
                 // Get the saved/updated server
                 result.getOrNull()?.let { savedServer ->
@@ -564,15 +385,13 @@ class DashboardViewModel @Inject constructor(
                     preferencesDataStore.setSelectedDnsId(savedServer.id)
                     preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
-                    // Validate and connect to the saved server
-                    if (validateCustomDnsConnectivity(savedServer)) {
-                        // If already connected, disconnect first
-                        if (connectionState.value is ConnectionState.Connected) {
-                            vpnRepository.disconnect()
-                            delay(500)
-                        }
-                        vpnRepository.connect(savedServer)
+                    // Connect through the same service health checks as every other entry point.
+                    // If already connected, disconnect first
+                    if (connectionState.value is ConnectionState.Connected) {
+                        vpnRepository.disconnect()
+                        delay(500)
                     }
+                    vpnRepository.connect(savedServer)
                 }
             } else {
                 Log.e(TAG, "Failed to ${if (serverToEdit != null) "update" else "save"} custom DNS", result.exceptionOrNull())
@@ -677,23 +496,6 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    private fun startPingMonitoring(server: DnsServer) {
-        pingJob?.cancel()
-        pingJob = viewModelScope.launch {
-            while (isActive) {
-                val latency = pingDnsServerUseCase(server)
-                _currentPingMs.value = latency
-                delay(PING_INTERVAL_MS)
-            }
-        }
-    }
-
-    private fun stopPingMonitoring() {
-        pingJob?.cancel()
-        pingJob = null
-        _currentPingMs.value = null
-    }
-
     fun isVpnPrepared(): Boolean {
         return vpnRepository.isVpnPrepared()
     }
@@ -704,8 +506,4 @@ class DashboardViewModel @Inject constructor(
         return server.resolveSelectedProtocol(_selectedProtocol.value)
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        stopPingMonitoring()
-    }
 }

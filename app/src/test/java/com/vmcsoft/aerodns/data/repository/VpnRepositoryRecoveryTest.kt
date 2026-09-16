@@ -5,6 +5,8 @@ import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
 import com.vmcsoft.aerodns.data.vpn.NetworkMonitor
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
+import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.statusDescription
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import io.mockk.every
 import io.mockk.mockk
@@ -80,4 +82,45 @@ class VpnRepositoryRecoveryTest {
         runCurrent()
         assertEquals(ConnectionState.Disconnected, repository.connectionState.value)
     }
+    @Test fun `health transitions preserve active settings and connection uptime`() = runTest {
+        val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)
+        events.emit(DnsVpnServiceEvent.Established(config))
+        runCurrent()
+        val established = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(DnsHealth.Checking, established.dnsHealth)
+        for (health in listOf(DnsHealth.Healthy(100, 12), DnsHealth.Unhealthy(200), DnsHealth.Healthy(300, 8))) {
+            events.emit(DnsVpnServiceEvent.Established(config, health))
+            runCurrent()
+            val state = repository.connectionState.value as ConnectionState.Connected
+            assertEquals(config, state.activeConfig)
+            assertEquals(established.connectedAtMillis, state.connectedAtMillis)
+            assertEquals(health, state.dnsHealth)
+            assertEquals((health as? DnsHealth.Healthy)?.latencyMs, state.currentPingMs)
+        }
+    }
+
+    @Test fun `late health cannot replace a newer resolver`() = runTest {
+        val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)
+        events.emit(DnsVpnServiceEvent.Established(config))
+        runCurrent()
+        val newer = config.copy(connectionRequestId = "newer")
+        events.emit(DnsVpnServiceEvent.Established(newer))
+        runCurrent()
+        events.emit(DnsVpnServiceEvent.Established(config, DnsHealth.Healthy(100, 12)))
+        runCurrent()
+        val state = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(newer, state.activeConfig)
+        assertEquals(DnsHealth.Checking, state.dnsHealth)
+    }
+
+    @Test fun `new repository adopts latest completed health snapshot`() = runTest {
+        val health = DnsHealth.Unhealthy(200)
+        events.emit(DnsVpnServiceEvent.Established(config, health))
+        val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)
+        runCurrent()
+        val state = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(health, state.dnsHealth)
+        assertEquals("DNS check failed · Saved custom · DoH", state.activeConfig!!.statusDescription(state.dnsHealth))
+    }
+
 }

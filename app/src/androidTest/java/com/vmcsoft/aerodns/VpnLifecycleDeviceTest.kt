@@ -133,6 +133,32 @@ class VpnLifecycleDeviceTest {
         assertEquals(replacement.connectionRequestId, recovery.getString("requestId", null))
     }
 
+    @Test
+    fun queuedConnectSurvivesThePreviousDisconnect() = runBlocking {
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, standard()))
+        repeat(10) {
+            val replacement = standard()
+            // Queue both commands while the app main thread is occupied. The stop
+            // must honor its startId instead of taking down the pending start.
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                context.startService(Intent(context, DnsVpnService::class.java).apply {
+                    action = DnsVpnService.ACTION_DISCONNECT
+                })
+                val intent = Intent(context, DnsVpnService::class.java).apply {
+                    action = DnsVpnService.ACTION_CONNECT
+                    putExtra(DnsVpnService.EXTRA_DNS_CONFIG, replacement)
+                }
+                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
+            }
+            withTimeout(5000) { DnsVpnServiceEvents.events.first {
+                it is DnsVpnServiceEvent.Established && it.config == replacement
+            } }
+            kotlinx.coroutines.delay(250)
+            awaitDns("8.8.8.8")
+            assertEquals(replacement, (DnsVpnServiceEvents.events.replayCache.last() as DnsVpnServiceEvent.Established).config)
+        }
+    }
+
     private fun standard() = DnsConnectionConfig("lifecycle-test", "Lifecycle test", DnsProtocol.STANDARD,
         listOf("8.8.8.8"), connectionRequestId = "test-${System.nanoTime()}")
 
@@ -149,7 +175,17 @@ class VpnLifecycleDeviceTest {
         }
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         // Identity, not equality: a later Stopped(null) is still a new terminal event.
-        withTimeout(3000) { DnsVpnServiceEvents.events.first { it !== previous } }
+        withTimeout(3000) { DnsVpnServiceEvents.events.first {
+            it !== previous && when {
+                action == DnsVpnService.ACTION_DISCONNECT -> it is DnsVpnServiceEvent.Stopped
+                action == DnsVpnService.ACTION_CONNECT -> when (it) {
+                    is DnsVpnServiceEvent.Established -> it.config == config
+                    is DnsVpnServiceEvent.Failed -> it.config == config
+                    is DnsVpnServiceEvent.Stopped -> false
+                }
+                else -> true
+            }
+        } }
     }
 
     private fun assertEstablished(event: DnsVpnServiceEvent): DnsConnectionConfig {

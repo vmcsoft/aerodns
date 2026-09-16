@@ -11,6 +11,9 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import com.vmcsoft.aerodns.R
 import com.vmcsoft.aerodns.domain.model.ConnectionState
+import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.statusText
+import com.vmcsoft.aerodns.domain.model.statusDescription
 import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.domain.repository.SettingsRepository
 import com.vmcsoft.aerodns.domain.repository.VpnRepository
@@ -20,7 +23,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -89,7 +91,7 @@ class DnsTileService : TileService() {
                 Log.d(TAG, "Current state: ${currentState::class.simpleName}")
 
                 when (currentState) {
-                    is ConnectionState.Disconnected -> {
+                    is ConnectionState.Disconnected, is ConnectionState.Error -> {
                         // Check VPN permission first
                         if (!vpnRepository.isVpnPrepared()) {
                             Log.w(TAG, "VPN not prepared, need user permission")
@@ -127,17 +129,6 @@ class DnsTileService : TileService() {
                         Log.i(TAG, "Disconnecting from ${currentState.server.name}")
                         vpnRepository.disconnect()
                     }
-                    is ConnectionState.Error -> {
-                        Log.w(TAG, "Error state, retrying connection")
-                        // Retry connection
-                        val selectedDnsId = settingsRepository.getSelectedDnsId()
-                        if (selectedDnsId != null) {
-                            val dnsServer = getDnsServerById(selectedDnsId)
-                            if (dnsServer != null) {
-                                vpnRepository.connect(dnsServer)
-                            }
-                        }
-                    }
                     else -> {
                         // Ignore clicks during connecting/disconnecting
                         Log.d(TAG, "Tile clicked during transition, ignoring")
@@ -154,10 +145,12 @@ class DnsTileService : TileService() {
 
         when (state) {
             is ConnectionState.Connected -> {
-                tile.state = Tile.STATE_ACTIVE
-                tile.label = getString(R.string.tile_label)
-                tile.contentDescription = getString(R.string.tile_connected, state.server.name)
-                QuickSettingsTileCompat.setSubtitle(tile, state.server.name)
+                tile.state = if (state.dnsHealth is DnsHealth.Healthy) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+                // Status remains visible on Android 7–9, where tiles have no subtitle.
+                tile.label = if (state.dnsHealth is DnsHealth.Healthy) getString(R.string.tile_label) else state.dnsHealth.statusText
+                val description = state.activeConfig?.statusDescription(state.dnsHealth) ?: state.dnsHealth.statusText
+                tile.contentDescription = description
+                QuickSettingsTileCompat.setSubtitle(tile, description)
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_active)
             }
             is ConnectionState.Disconnected -> {
@@ -182,7 +175,7 @@ class DnsTileService : TileService() {
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_inactive)
             }
             is ConnectionState.Error -> {
-                tile.state = Tile.STATE_UNAVAILABLE
+                tile.state = Tile.STATE_INACTIVE
                 tile.label = getString(R.string.tile_label)
                 tile.contentDescription = "Error: ${state.message}"
                 QuickSettingsTileCompat.setSubtitle(tile, "Error")

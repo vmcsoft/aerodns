@@ -5,6 +5,8 @@ import ssl
 import struct
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 
@@ -22,6 +24,8 @@ def dns_reply(query, size):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    health_counts = {}
+    health_lock = threading.Lock()
 
     def do_POST(self):
         size = int(self.headers.get("Content-Length", "0"))
@@ -32,6 +36,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Test-generated, uncompressed QNAME; only the first label selects a fixture.
         name = query[13:13 + query[12]].decode("ascii")
         body = dns_reply(query, {"large": 65507, "overflow": 65535, "medium": 4096}.get(name, 128))
+        if name == "example":
+            if self.path.startswith("/health-slow"):
+                time.sleep(2)
+            with self.health_lock:
+                count = self.health_counts.get(self.path, 0) + 1
+                self.health_counts[self.path] = count
+            failed = self.path.startswith("/health-fail") or (self.path.startswith("/health-cycle") and count == 2)
+            header = query[:2] + struct.pack("!5H", 0x8182 if failed else 0x8180, 1, 0 if failed else 1, 0, 0)
+            answer = b"" if failed else struct.pack("!HHHIH4B", 0xC00C, 1, 1, 60, 4, 93, 184, 216, 34)
+            body = header + query[12:] + answer
         if name == "short":
             body = b"bad"
         elif name == "mismatch":

@@ -72,8 +72,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.vmcsoft.aerodns.data.dns.DnsSecurityMessages
 import com.vmcsoft.aerodns.domain.model.ConnectionState
+import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.statusText
+import com.vmcsoft.aerodns.domain.model.label
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.presentation.components.CustomDnsDialog
@@ -101,11 +103,8 @@ fun DashboardScreen(
     val serverToEdit by viewModel.serverToEdit.collectAsState()
     val serverToDelete by viewModel.serverToDelete.collectAsState()
     val speedTestState by viewModel.speedTestState.collectAsState()
-    val currentPingMs by viewModel.currentPingMs.collectAsState()
     val dnsServers by viewModel.dnsServers.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
-    val isValidatingDns by viewModel.isValidatingDns.collectAsState()
-    val validationError by viewModel.validationError.collectAsState()
     val selectedProtocol by viewModel.selectedProtocol.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -149,15 +148,8 @@ fun DashboardScreen(
                 ) {
                     ConnectionPanel(
                         connectionState = connectionState,
-                        selectedServer = selectedServer,
-                        currentPingMs = currentPingMs,
+                        selectedProtocol = selectedProtocol,
                         onConnectToggle = viewModel::onConnectToggle
-                    )
-
-                    ValidationMessage(
-                        isValidatingDns = isValidatingDns,
-                        validationError = validationError,
-                        onClearValidationError = viewModel::clearValidationError
                     )
 
                     selectedServer?.let { server ->
@@ -255,19 +247,6 @@ fun DashboardScreen(
                 )
             }
 
-            if (validationError == DnsSecurityMessages.UNTRUSTED_CERTIFICATE) {
-                AlertDialog(
-                    onDismissRequest = { viewModel.clearValidationError() },
-                    title = { Text("Certificate blocked") },
-                    text = { Text(DnsSecurityMessages.UNTRUSTED_CERTIFICATE) },
-                    confirmButton = {
-                        TextButton(onClick = { viewModel.clearValidationError() }) {
-                            Text("OK")
-                        }
-                    }
-                )
-            }
-
             serverToDelete?.let { server ->
                 AlertDialog(
                     onDismissRequest = { viewModel.onDismissDeleteConfirmation() },
@@ -300,13 +279,13 @@ fun DashboardScreen(
 @Composable
 private fun ConnectionPanel(
     connectionState: ConnectionState,
-    selectedServer: DnsServer?,
-    currentPingMs: Long?,
+    selectedProtocol: DnsProtocol,
     onConnectToggle: () -> Unit
 ) {
     val isConnectingOrDisconnecting = connectionState is ConnectionState.Connecting ||
         connectionState is ConnectionState.Disconnecting
     val isConnected = connectionState is ConnectionState.Connected
+    val connected = connectionState as? ConnectionState.Connected
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -335,6 +314,16 @@ private fun ConnectionPanel(
             )
         }
 
+        connected?.activeConfig?.let { config ->
+            Text(text = config.displayName, color = TextGray, textAlign = TextAlign.Center)
+        }
+        if (connected?.dnsHealth is DnsHealth.Unhealthy) {
+            Text(
+                text = "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
+                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
+            )
+        }
+
         ConnectButton(
             isConnected = isConnected,
             isBusy = isConnectingOrDisconnecting,
@@ -346,12 +335,12 @@ private fun ConnectionPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             MiniMetric(
-                label = "Protocol",
-                value = if (selectedServer?.dohUrl != null) "DoH ready" else "Standard"
+                label = if (connected == null) "Selected protocol" else "Protocol",
+                value = (connected?.activeConfig?.protocol ?: selectedProtocol).label
             )
             MiniMetric(
-                label = "Latency",
-                value = currentPingMs?.let { "${it}ms" } ?: "--"
+                label = "DNS latency",
+                value = (connected?.dnsHealth as? DnsHealth.Healthy)?.latencyMs?.let { "${it}ms" } ?: "--"
             )
         }
     }
@@ -463,60 +452,6 @@ private fun ConnectButton(
 }
 
 @Composable
-private fun ValidationMessage(
-    isValidatingDns: Boolean,
-    validationError: String?,
-    onClearValidationError: () -> Unit
-) {
-    if (!isValidatingDns && validationError == null) return
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = if (validationError == null) {
-            AeroCyan.copy(alpha = 0.12f)
-        } else {
-            StatusDisconnected.copy(alpha = 0.12f)
-        },
-        border = BorderStroke(
-            1.dp,
-            if (validationError == null) AeroCyan.copy(alpha = 0.36f) else StatusDisconnected.copy(alpha = 0.36f)
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isValidatingDns) {
-                Material2CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = AeroCyan
-                )
-                Text(
-                    text = "Testing DNS connectivity...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = AeroCyan
-                )
-            }
-            validationError?.let { error ->
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectTapGestures { onClearValidationError() }
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun DnsConfigPanel(
     server: DnsServer,
     selectedProtocol: DnsProtocol,
@@ -539,7 +474,7 @@ private fun DnsConfigPanel(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "DNS Server",
+                    text = "Selected DNS server",
                     style = MaterialTheme.typography.labelMedium,
                     color = TextGray,
                     textAlign = TextAlign.Center
@@ -790,7 +725,7 @@ private fun DnsProtocol.displayName(): String {
 @Composable
 private fun getStatusText(state: ConnectionState): String {
     return when (state) {
-        is ConnectionState.Connected -> "Connected"
+        is ConnectionState.Connected -> state.dnsHealth.statusText
         is ConnectionState.Connecting -> "Connecting..."
         is ConnectionState.Disconnected -> "Disconnected"
         is ConnectionState.Disconnecting -> "Disconnecting..."
@@ -801,7 +736,11 @@ private fun getStatusText(state: ConnectionState): String {
 @Composable
 private fun getStatusColor(state: ConnectionState): Color {
     return when (state) {
-        is ConnectionState.Connected -> ActiveButtonCyan
+        is ConnectionState.Connected -> when (state.dnsHealth) {
+            is DnsHealth.Healthy -> ActiveButtonCyan
+            DnsHealth.Checking -> MaterialTheme.colorScheme.primary
+            is DnsHealth.Unhealthy -> StatusDisconnected
+        }
         is ConnectionState.Connecting -> MaterialTheme.colorScheme.primary
         is ConnectionState.Disconnected -> TextGray
         is ConnectionState.Disconnecting -> MaterialTheme.colorScheme.primary
