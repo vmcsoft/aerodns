@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--serial", required=True)
-    parser.add_argument("--scenario", choices=("process-death", "reboot", "disconnect-reboot", "force-stop"), required=True)
+    parser.add_argument("--scenario", choices=("process-death", "reboot", "disconnect-reboot", "always-on-disconnect", "force-stop"), required=True)
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence outside the repository")
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
@@ -107,6 +107,20 @@ def main():
                 assert not after["pid"] and not after["vpn"] and after["status"] is None, after
                 time.sleep(1)
             evidence["after"] = after
+        elif args.scenario == "always-on-disconnect":
+            assert evidence["always_on"] == PACKAGE, "Enable Always-on for the protected disconnect check"
+            assert evidence["lockdown"] != "1", "Disable lockdown for this recovery check"
+            adb("shell", "am", "broadcast", "--receiver-foreground", "-n", RECEIVER, "--es", "command", "disconnect")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                current = snapshot()
+                assert current["vpn"] and current["pid"] == before["pid"], current
+                assert current["record"] == before["record"] and current["status"] == before["status"], current
+                time.sleep(1)
+            evidence["before_reboot"] = current
+            evidence["boot_seconds"] = reboot()
+            after, elapsed = wait_healthy(previous_request=before["record"]["requestId"])
+            evidence.update(after=after, recovery_seconds_after_boot=elapsed)
         elif args.scenario == "reboot":
             assert evidence["always_on"] == PACKAGE, "Enable Always-on for this validation package in Settings first"
             assert evidence["lockdown"] != "1", "Disable lockdown for the recovery-only reboot check"
@@ -114,12 +128,13 @@ def main():
             after, elapsed = wait_healthy(previous_request=before["record"]["requestId"])
             evidence.update(after=after, recovery_seconds_after_boot=elapsed)
         else:
+            assert evidence["always_on"] != PACKAGE, "Turn off Always-on before testing an explicit disconnect"
             adb("shell", "am", "broadcast", "--receiver-foreground", "-n", RECEIVER, "--es", "command", "disconnect")
             time.sleep(1)
             evidence["before_reboot"] = observe_off(10)
             evidence["boot_seconds"] = reboot()
             evidence["after"] = observe_off(30)
-        if args.scenario in ("process-death", "reboot"):
+        if args.scenario in ("process-death", "reboot", "always-on-disconnect"):
             original = {k: v for k, v in before["record"].items() if k != "requestId"}
             restored = {k: v for k, v in evidence["after"]["record"].items() if k != "requestId"}
             assert original == restored, "Recovery changed the saved configuration"

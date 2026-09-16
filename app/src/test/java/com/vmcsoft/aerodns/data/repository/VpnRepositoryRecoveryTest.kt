@@ -36,6 +36,41 @@ class VpnRepositoryRecoveryTest {
     }
     @After fun after() = unmockkObject(DnsVpnServiceEvents)
 
+    @Test fun `policy-only updates reach a connected repository without resetting uptime`() = runTest {
+        val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)
+        val health = DnsHealth.Healthy(1, 20)
+        events.emit(DnsVpnServiceEvent.Established(config, health)); runCurrent()
+        val before = repository.connectionState.value as ConnectionState.Connected
+        val policy = com.vmcsoft.aerodns.domain.model.VpnControlPolicy(alwaysOn = true, lockdown = true)
+        events.emit(DnsVpnServiceEvent.Established(config, health, policy)); runCurrent()
+        val after = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(before.connectedAtMillis, after.connectedAtMillis)
+        assertEquals(policy, after.controlPolicy)
+        assertEquals("Android is blocking traffic · Saved custom · DoH", config.statusDescription(health, policy))
+    }
+
+    @Test fun `always-on disconnect does not send a stop or alter state`() = runTest {
+        val context = mockk<android.content.Context>()
+        val repository = VpnRepositoryImpl(context, networkMonitor, mockk(), mockk(), backgroundScope)
+        events.emit(DnsVpnServiceEvent.Established(config, controlPolicy = com.vmcsoft.aerodns.domain.model.VpnControlPolicy(alwaysOn = true)))
+        runCurrent()
+        val before = repository.connectionState.value
+        repository.disconnect()
+        assertSame(before, repository.connectionState.value)
+        io.mockk.verify { context wasNot io.mockk.Called }
+    }
+
+    @Test fun `always-on prevents benchmark pause before any service command`() = runTest {
+        val context = mockk<android.content.Context>()
+        val repository = VpnRepositoryImpl(context, networkMonitor, mockk(), mockk(), backgroundScope)
+        events.emit(DnsVpnServiceEvent.Established(config, controlPolicy = com.vmcsoft.aerodns.domain.model.VpnControlPolicy(alwaysOn = true)))
+        runCurrent()
+        try { repository.pauseForSpeedTest(); fail("Expected Always-on protection") }
+        catch (expected: IllegalStateException) { assertTrue(expected.message.orEmpty().contains("Always-on")) }
+        assertTrue(repository.connectionState.value is ConnectionState.Connected)
+        io.mockk.verify { context wasNot io.mockk.Called }
+    }
+
     @Test fun `repository created after service restoration reads actual saved settings`() = runTest {
         events.emit(DnsVpnServiceEvent.Established(config))
         val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)

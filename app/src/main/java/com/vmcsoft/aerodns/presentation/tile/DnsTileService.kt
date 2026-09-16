@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
+import android.provider.Settings
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -127,8 +128,12 @@ class DnsTileService : TileService() {
                         }
                     }
                     is ConnectionState.Connected -> {
-                        Log.i(TAG, "Disconnecting from ${currentState.server.name}")
-                        vpnRepository.disconnect()
+                        if (currentState.controlPolicy.alwaysOn) {
+                            openAndCollapse(Intent(Settings.ACTION_VPN_SETTINGS))
+                        } else {
+                            Log.i(TAG, "Disconnecting from ${currentState.server.name}")
+                            vpnRepository.disconnect()
+                        }
                     }
                     else -> {
                         // Ignore clicks during connecting/disconnecting
@@ -146,10 +151,10 @@ class DnsTileService : TileService() {
 
         when (state) {
             is ConnectionState.Connected -> {
-                tile.state = if (state.dnsHealth is DnsHealth.Healthy) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+                tile.state = if (state.dnsHealth is DnsHealth.Healthy && !state.controlPolicy.lockdown) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
                 // Status remains visible on Android 7–9, where tiles have no subtitle.
-                tile.label = if (state.dnsHealth is DnsHealth.Healthy) getString(R.string.tile_label) else state.dnsHealth.statusText
-                val description = state.activeConfig?.statusDescription(state.dnsHealth) ?: state.dnsHealth.statusText
+                tile.label = if (state.controlPolicy.alwaysOn) "Always-on DNS" else if (state.dnsHealth is DnsHealth.Healthy) getString(R.string.tile_label) else state.dnsHealth.statusText
+                val description = state.activeConfig?.statusDescription(state.dnsHealth, state.controlPolicy) ?: state.dnsHealth.statusText
                 tile.contentDescription = description
                 QuickSettingsTileCompat.setSubtitle(tile, description)
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_active)
@@ -200,6 +205,10 @@ class DnsTileService : TileService() {
 
     private fun openAppAndCollapse() {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        openAndCollapse(launchIntent)
+    }
+
+    private fun openAndCollapse(launchIntent: Intent) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(
                 PendingIntent.getActivity(

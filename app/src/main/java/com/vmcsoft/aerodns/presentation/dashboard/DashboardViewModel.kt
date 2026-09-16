@@ -165,6 +165,10 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onConnectToggle() {
+        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) {
+            _errorMessage.value = "Android controls this connection. Use VPN settings to turn off Always-on VPN."
+            return
+        }
         vpnRepository.invalidateSpeedTestRestoration()
         viewModelScope.launch {
             when (connectionState.value) {
@@ -196,8 +200,6 @@ class DashboardViewModel @Inject constructor(
 
             // If already connected, reconnect with new server
             if (connectionState.value is ConnectionState.Connected) {
-                vpnRepository.disconnect()
-                delay(500)
                 vpnRepository.connect(server)
             }
         }
@@ -219,12 +221,6 @@ class DashboardViewModel @Inject constructor(
             preferencesDataStore.setSelectedDnsId(server.id)
             preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
-            // Always connect to the selected server
-            // If already connected, disconnect first
-            if (connectionState.value is ConnectionState.Connected) {
-                vpnRepository.disconnect()
-                delay(500)
-            }
             vpnRepository.connect(server)
         }
     }
@@ -254,14 +250,16 @@ class DashboardViewModel @Inject constructor(
             preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
             if (connectionState.value is ConnectionState.Connected) {
-                vpnRepository.disconnect()
-                delay(500)
                 vpnRepository.connect(server)
             }
         }
     }
 
     fun onShowSpeedTest() {
+        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) {
+            _errorMessage.value = "Turn off Always-on VPN in Android VPN settings before running a speed test."
+            return
+        }
         _showSpeedTestDialog.value = true
         _speedTestState.value = SpeedTestState.Running(
             completed = 0,
@@ -405,11 +403,6 @@ class DashboardViewModel @Inject constructor(
                     preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
 
                     // Connect through the same service health checks as every other entry point.
-                    // If already connected, disconnect first
-                    if (connectionState.value is ConnectionState.Connected) {
-                        vpnRepository.disconnect()
-                        delay(500)
-                    }
                     vpnRepository.connect(savedServer)
                 }
             } else {
@@ -430,6 +423,12 @@ class DashboardViewModel @Inject constructor(
     fun onConfirmDeleteCustomDns() {
         vpnRepository.invalidateSpeedTestRestoration()
         val server = _serverToDelete.value ?: return
+        val active = connectionState.value as? ConnectionState.Connected
+        if (active?.controlPolicy?.alwaysOn == true && active.activeConfig?.serverId == server.id) {
+            _errorMessage.value = "Choose another resolver before deleting the active Always-on DNS profile."
+            _serverToDelete.value = null
+            return
+        }
         viewModelScope.launch {
             val result = deleteCustomDnsUseCase(server.id)
             if (result.isSuccess) {

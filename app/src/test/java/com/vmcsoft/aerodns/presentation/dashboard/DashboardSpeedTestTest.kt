@@ -40,6 +40,26 @@ class DashboardSpeedTestTest {
     }
     @After fun cleanup() { vm.viewModelScope.cancel(); Dispatchers.resetMain(); unmockkStatic(Log::class) }
 
+    @Test fun `always-on blocks dashboard stop and measurement without pausing`() = runTest {
+        runCurrent()
+        val before = (repository.connectionState.value as ConnectionState.Connected).copy(controlPolicy = VpnControlPolicy(alwaysOn = true))
+        repository.connectionState.value = before
+        runCurrent()
+        vm.onConnectToggle(); vm.onShowSpeedTest(); runCurrent()
+        assertTrue(repository.calls.isEmpty())
+        assertFalse(vm.showSpeedTestDialog.value)
+        assertSame(before, repository.connectionState.value)
+        assertTrue(vm.errorMessage.value.orEmpty().contains("Always-on"))
+    }
+
+    @Test fun `always-on resolver selection delegates one connect without explicit stop`() = runTest {
+        runCurrent()
+        repository.connectionState.value = (repository.connectionState.value as ConnectionState.Connected)
+            .copy(controlPolicy = VpnControlPolicy(alwaysOn = true))
+        vm.onDnsServerSelected(fastest); advanceUntilIdle()
+        assertEquals(listOf("connect:fast"), repository.calls)
+    }
+
     @Test fun `completion restores once and closing completed dialog does not restore again`() = runTest {
         coEvery { speed(any(), any()) } returns listOf(result)
         runCurrent(); vm.onShowSpeedTest(); runCurrent()

@@ -19,5 +19,5 @@ val DnsProtocol.label: String get() = when (this) {
     DnsProtocol.DOT -> "DoT"
 }
 
-fun DnsConnectionConfig.statusDescription(health: DnsHealth): String =
-    "${health.statusText} · $displayName · ${protocol.label}"
+fun DnsConnectionConfig.statusDescription(health: DnsHealth, policy: VpnControlPolicy = VpnControlPolicy()): String =
+    "${policy.statusText(health)} · $displayName · ${protocol.label}"

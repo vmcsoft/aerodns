@@ -39,6 +39,14 @@ For DoH, the app exposes a virtual DNS address at `10.0.0.1`, routes only that a
 
 See [Architecture](docs/ARCHITECTURE.md) for the technical model and current protocol limitations.
 
+## Always-on VPN
+
+When Android Always-on VPN is selected, turn it off in Android VPN settings before
+disconnecting or running a speed test. You can still choose another DNS resolver.
+Leave **Block connections without VPN** off: AeroDNS routes DNS only, so this Android
+option blocks ordinary app traffic. Android 10+ can report that setting directly;
+older Android behavior still needs broader device validation.
+
 ## Build from source
 
 Requirements:

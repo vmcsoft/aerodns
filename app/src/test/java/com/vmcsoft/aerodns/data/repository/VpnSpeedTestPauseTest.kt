@@ -72,6 +72,19 @@ class VpnSpeedTestPauseTest {
         return repository
     }
 
+    @Test fun `a disconnect refused by newly enabled always-on keeps the acknowledged connection`() = runTest {
+        val repository = repository()
+        every { context.startService(any()) } answers {
+            events.tryEmit(DnsVpnServiceEvent.Established(original, controlPolicy = VpnControlPolicy(alwaysOn = true)))
+            mockk()
+        }
+        repository.disconnect()
+        val state = repository.connectionState.value as ConnectionState.Connected
+        assertEquals(original, state.activeConfig)
+        assertTrue(state.controlPolicy.alwaysOn)
+        assertEquals(original, active)
+    }
+
     @Test fun `restore consumes token once and preserves actual protocol endpoint and TLS policy`() = runTest {
         val repository = repository()
         val token = requireNotNull(repository.pauseForSpeedTest())

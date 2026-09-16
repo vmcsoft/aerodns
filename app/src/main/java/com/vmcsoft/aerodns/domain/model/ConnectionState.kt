@@ -8,7 +8,8 @@ sealed class ConnectionState {
         val connectedAtMillis: Long,
         val currentPingMs: Long? = null,
         val activeConfig: DnsConnectionConfig? = null,
-        val dnsHealth: DnsHealth = DnsHealth.Checking
+        val dnsHealth: DnsHealth = DnsHealth.Checking,
+        val controlPolicy: VpnControlPolicy = VpnControlPolicy()
     ) : ConnectionState()
     object Disconnecting : ConnectionState()
     data class Error(val message: String) : ConnectionState()

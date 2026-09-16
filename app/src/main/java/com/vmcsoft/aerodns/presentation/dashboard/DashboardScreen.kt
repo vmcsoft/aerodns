@@ -52,6 +52,11 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -169,6 +174,7 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 ActionButtons(
+                    speedTestEnabled = (connectionState as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true,
                     onShowSpeedTest = viewModel::onShowSpeedTest,
                     onShowDnsSelector = viewModel::onShowDnsSelector
                 )
@@ -286,6 +292,8 @@ private fun ConnectionPanel(
         connectionState is ConnectionState.Disconnecting
     val isConnected = connectionState is ConnectionState.Connected
     val connected = connectionState as? ConnectionState.Connected
+    val alwaysOn = connected?.controlPolicy?.alwaysOn == true
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -317,9 +325,19 @@ private fun ConnectionPanel(
         connected?.activeConfig?.let { config ->
             Text(text = config.displayName, color = TextGray, textAlign = TextAlign.Center)
         }
+        if (alwaysOn) {
+            Text(
+                text = if (connected?.controlPolicy?.lockdown == true)
+                    "AeroDNS changes DNS only. Turn off ‘Block connections without VPN’ in Android VPN settings to let other apps use the internet."
+                else "Always-on VPN is controlled by Android. Turn it off in VPN settings to disconnect or run a speed test.",
+                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
+            )
+            TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }) { Text("VPN settings") }
+        }
         if (connected?.dnsHealth is DnsHealth.Unhealthy) {
             Text(
-                text = "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
+                text = if (alwaysOn) "VPN is on. DNS checks will retry automatically. You can choose another resolver."
+                    else "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
                 color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
             )
         }
@@ -327,6 +345,7 @@ private fun ConnectionPanel(
         ConnectButton(
             isConnected = isConnected,
             isBusy = isConnectingOrDisconnecting,
+            enabled = !alwaysOn,
             onClick = onConnectToggle
         )
 
@@ -376,6 +395,7 @@ private fun MiniMetric(
 private fun ConnectButton(
     isConnected: Boolean,
     isBusy: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "connect_button")
@@ -419,7 +439,8 @@ private fun ConnectButton(
                 .size(148.dp)
                 .clip(CircleShape)
                 .background(if (isConnected) connectedButtonBrush() else AeroGradient)
-                .pointerInput(isBusy) {
+                .semantics(mergeDescendants = true) { if (!enabled) disabled() }
+                .pointerInput(isBusy, enabled) {
                     detectTapGestures(
                         onPress = {
                             isPressed = true
@@ -427,7 +448,7 @@ private fun ConnectButton(
                             isPressed = false
                         },
                         onTap = {
-                            if (!isBusy) onClick()
+                            if (!isBusy && enabled) onClick()
                         }
                     )
                 },
@@ -607,6 +628,7 @@ private fun InfoRow(
 
 @Composable
 private fun ActionButtons(
+    speedTestEnabled: Boolean,
     onShowSpeedTest: () -> Unit,
     onShowDnsSelector: () -> Unit
 ) {
@@ -616,6 +638,7 @@ private fun ActionButtons(
     ) {
         ElevatedButton(
             onClick = onShowSpeedTest,
+            enabled = speedTestEnabled,
             modifier = Modifier
                 .weight(1f)
                 .height(54.dp),
@@ -725,7 +748,7 @@ private fun DnsProtocol.displayName(): String {
 @Composable
 private fun getStatusText(state: ConnectionState): String {
     return when (state) {
-        is ConnectionState.Connected -> state.dnsHealth.statusText
+        is ConnectionState.Connected -> state.controlPolicy.statusText(state.dnsHealth)
         is ConnectionState.Connecting -> "Connecting..."
         is ConnectionState.Disconnected -> "Disconnected"
         is ConnectionState.Disconnecting -> "Disconnecting..."
@@ -736,7 +759,7 @@ private fun getStatusText(state: ConnectionState): String {
 @Composable
 private fun getStatusColor(state: ConnectionState): Color {
     return when (state) {
-        is ConnectionState.Connected -> when (state.dnsHealth) {
+        is ConnectionState.Connected -> if (state.controlPolicy.lockdown) StatusDisconnected else when (state.dnsHealth) {
             is DnsHealth.Healthy -> ActiveButtonCyan
             DnsHealth.Checking -> MaterialTheme.colorScheme.primary
             is DnsHealth.Unhealthy -> StatusDisconnected

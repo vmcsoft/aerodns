@@ -120,7 +120,7 @@ class VpnRepositoryImpl internal constructor(
                 // A completed probe belongs only to its established interface. A fresh
                 // repository may adopt the latest service snapshot after restoration.
                 if (current != null && current.activeConfig != config && event.health != DnsHealth.Checking) return
-                if (current?.activeConfig == config && current.dnsHealth == event.health) return
+                if (current?.activeConfig == config && current.dnsHealth == event.health && current.controlPolicy == event.controlPolicy) return
                 val server = lastConnectedServer?.takeIf { it.id == config.serverId }
                     ?: DnsProviderData.providers.firstOrNull { it.id == config.serverId }
                     ?: config.toRestoredServer()
@@ -130,7 +130,7 @@ class VpnRepositoryImpl internal constructor(
                     server,
                     current?.takeIf { it.activeConfig == config }?.connectedAtMillis ?: System.currentTimeMillis(),
                     currentPingMs = (event.health as? DnsHealth.Healthy)?.latencyMs,
-                    activeConfig = config, dnsHealth = event.health
+                    activeConfig = config, dnsHealth = event.health, controlPolicy = event.controlPolicy
                 )
             }
             is DnsVpnServiceEvent.Failed -> {
@@ -204,8 +204,10 @@ class VpnRepositoryImpl internal constructor(
 
                 // Disconnect and reconnect
                 Log.d(TAG, "Reconnecting to ${server.name}...")
-                disconnectInternal(clearLastServer = false)
-                delay(RECONNECT_DELAY_MS)
+                if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true) {
+                    if (!disconnectInternal(clearLastServer = false)) return
+                    delay(RECONNECT_DELAY_MS)
+                }
                 if (operation != userOperation.get() ||
                     VpnRecoveryStore(context).load()?.connectionRequestId != activeConfig.connectionRequestId) return
                 connectInternal(server, activeConfig)
@@ -233,11 +235,13 @@ class VpnRepositoryImpl internal constructor(
         server: DnsServer, restoredConfig: DnsConnectionConfig? = null,
         restoreExactConfig: Boolean = false, isCurrent: () -> Boolean = { true }
     ) {
-        if (_connectionState.value is ConnectionState.Connected) {
-            disconnectInternal(clearLastServer = true)
+        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == false) {
+            if (!disconnectInternal(clearLastServer = true) &&
+                (_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true) return
         }
 
         if (!isCurrent()) return
+        val retainedConnection = _connectionState.value as? ConnectionState.Connected
         _connectionState.value = ConnectionState.Connecting
 
         try {
@@ -251,7 +255,7 @@ class VpnRepositoryImpl internal constructor(
                     ?: (settingsRepository.isExperimentalPacketLoopEnabled() || selectedProtocol.requiresPacketLoop())
                 buildDnsConnectionConfig(server, stack, selectedProtocol).getOrElse { error ->
                     Log.e(TAG, "Invalid DNS config for ${server.name} on network $stack", error)
-                    _connectionState.value = ConnectionState.Error(
+                    _connectionState.value = retainedConnection ?: ConnectionState.Error(
                         error.message ?: "No compatible DNS addresses for current network"
                     )
                     return
@@ -304,6 +308,7 @@ class VpnRepositoryImpl internal constructor(
     }
 
     override suspend fun disconnect() {
+        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) return
         val operation = userOperation.incrementAndGet()
         // Serialize state mutations with service events, while keeping the caller's cancellation.
         withContext(repositoryScope.coroutineContext.minusKey(Job)) {
@@ -313,7 +318,8 @@ class VpnRepositoryImpl internal constructor(
         }
     }
 
-    private suspend fun disconnectInternal(clearLastServer: Boolean) {
+    private suspend fun disconnectInternal(clearLastServer: Boolean): Boolean {
+        val previousState = _connectionState.value
         val configToStop = lastConnectedConfig
         _connectionState.value = ConnectionState.Disconnecting
 
@@ -322,9 +328,14 @@ class VpnRepositoryImpl internal constructor(
                 action = DnsVpnService.ACTION_DISCONNECT
                 putExtra(DnsVpnService.EXTRA_PRESERVE_RECOVERY, !clearLastServer)
             }
+            val previousEvent = DnsVpnServiceEvents.events.replayCache.lastOrNull()
             context.startService(intent)
 
-            awaitDisconnectResult(configToStop)
+            if (awaitDisconnectResult(configToStop, previousEvent) == null) {
+                _connectionState.value = previousState
+                DnsVpnServiceEvents.events.replayCache.lastOrNull()?.let(::handleServiceEvent)
+                return false
+            }
             if (clearLastServer) {
                 lastConnectedServer = null
             }
@@ -332,9 +343,11 @@ class VpnRepositoryImpl internal constructor(
             _connectionState.value = ConnectionState.Disconnected
 
             Log.d(TAG, "Disconnected")
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to disconnect", e)
             _connectionState.value = ConnectionState.Error(e.message ?: "Failed to disconnect")
+            return false
         }
     }
 
@@ -349,8 +362,9 @@ class VpnRepositoryImpl internal constructor(
             operationMutex.withLock {
                 if (operation != userOperation.get() || revision != restorationRevision.get()) return@withLock null
                 val connected = _connectionState.value as? ConnectionState.Connected ?: return@withLock null
+                check(!connected.controlPolicy.alwaysOn) { "Turn off Always-on VPN in Android VPN settings before running a speed test." }
                 val config = connected.activeConfig ?: return@withLock null
-                disconnectInternal(clearLastServer = true)
+                check(disconnectInternal(clearLastServer = true)) { "VPN did not stop for the speed test" }
                 val stopped = DnsVpnServiceEvents.events.replayCache.lastOrNull() as? DnsVpnServiceEvent.Stopped
                 if (operation != userOperation.get() || revision != restorationRevision.get()) return@withLock null
                 check(_connectionState.value == ConnectionState.Disconnected && stopped?.config == config) {
@@ -399,10 +413,10 @@ class VpnRepositoryImpl internal constructor(
         }
     }
 
-    private suspend fun awaitDisconnectResult(config: DnsConnectionConfig?) {
-        withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) {
+    private suspend fun awaitDisconnectResult(config: DnsConnectionConfig?, previous: DnsVpnServiceEvent?): DnsVpnServiceEvent? {
+        return withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) {
             DnsVpnServiceEvents.events.first { event ->
-                event is DnsVpnServiceEvent.Stopped &&
+                event !== previous && event is DnsVpnServiceEvent.Stopped &&
                     (config == null || event.config?.connectionRequestId == config.connectionRequestId)
             }
         }

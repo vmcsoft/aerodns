@@ -264,6 +264,7 @@ class VpnLifecycleDeviceTest {
         val previous = DnsVpnServiceEvents.events.replayCache.lastOrNull()
         val intent = Intent(context, DnsVpnService::class.java).apply {
             this.action = action
+            putExtra(DnsVpnService.EXTRA_APP_START, true)
             if (config != null) putExtra(DnsVpnService.EXTRA_DNS_CONFIG, config)
             if (preserveRecovery) putExtra(DnsVpnService.EXTRA_PRESERVE_RECOVERY, true)
         }

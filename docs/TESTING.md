@@ -86,9 +86,11 @@ For a separate Standard test, add `--ez standard true` to the connect broadcast;
 
 Run the process-death scenario once with Always-on disabled and separately with it enabled
 in Android VPN Settings. Use `--scenario reboot` for Always-on startup, with
-“Block connections without VPN” disabled. Use `--scenario disconnect-reboot` while
-connected to check that the production disconnect command clears recovery and remains
-off for 10 seconds before reboot and 30 seconds after boot. `--scenario force-stop`
+“Block connections without VPN” disabled. Use `--scenario disconnect-reboot` with
+Always-on disabled and the fixture connected to check that the production disconnect command clears recovery and remains
+off for 10 seconds before reboot and 30 seconds after boot. With Always-on enabled,
+`--scenario always-on-disconnect` instead verifies the stop is refused for ten seconds
+and the unchanged intended configuration recovers after reboot. `--scenario force-stop`
 checks that an explicit Android force-stop leaves the process, VPN and notification
 absent for 30 seconds; retained configuration is not treated as a running connection.
 
@@ -103,6 +105,36 @@ Keep JSON/log evidence outside Git. Disconnect, clear the validation package's A
 setting, stop the fixture, and shut down the owned emulator after the run. A passing
 emulator test does not establish OEM, low-memory eviction, lockdown, or
 production-upgrade behavior.
+
+## Always-on and notification regressions
+
+`NotificationBurstDeviceTest` rapidly replaces twenty resolver configurations, then
+requires the latest healthy notification within twelve seconds. Teardown waits for
+VPN/notification removal and checks that delayed work does not repost it. Run with
+Always-on **off**, the HTTPS fixture running and `adb reverse tcp:18443 tcp:18443`.
+
+`AlwaysOnPolicyDeviceTest` must run separately on Android 10+ with the actual Android
+Always-on setting enabled for the validation package. It checks the public system
+policy, disabled dashboard controls, rejected stale disconnect and benchmark pause,
+repository resolver replacement, notification action and a real SystemUI tile click.
+Run once with lockdown off and once with it on, passing `policyLockdown=true` for the
+latter. Use an owned emulator: lockdown deliberately interrupts ordinary networking.
+
+```bash
+adb -s emulator-5556 shell am instrument -w -e responseTestPort 18443 \
+  -e class com.vmcsoft.aerodns.NotificationBurstDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+# Enable Always-on through Android VPN settings before the separate policy run.
+adb -s emulator-5556 shell am instrument -w -e responseTestPort 18443 \
+  -e class com.vmcsoft.aerodns.AlwaysOnPolicyDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The policy test cleans up through the real service revocation callback, not the now
+forbidden disconnect command. Restore Always-on/lockdown settings after the run.
+The normal suite requires both settings off. Android 7–9 system-start inference,
+settings changes while the process is dead, OEM behavior and signed upgrades remain
+separate acceptance work. Do not count these Android 10+ checks as older-platform proof.
 
 ## Manual regression checklist
 

@@ -49,11 +49,40 @@ Custom DoH uses an explicit bootstrap IP when configured. Otherwise the endpoint
 
 The VPN service owns the actual active configuration and sampled DNS health. Establishment displays “Checking DNS…”; only a valid response through the active DNS path produces “Connected”. Dashboard, notification and tile consume the same service state.
 
-A separate, versioned `VpnRecoveryStore` durably records the intended active configuration in SharedPreferences. Sticky/system starts restore it with a new request identity. Explicit disconnect, revocation and startup/forwarding failure clear it; the next selected profile does not overwrite it.
+A separate, versioned `VpnRecoveryStore` durably records the intended active configuration in SharedPreferences. Sticky/system starts restore it with a new request identity. Accepted disconnects, revocation and startup/forwarding failure clear it; the next selected profile does not overwrite it.
 
 `VpnRecoveryService` is a small, unbound started service in the same process as the foreground VPN. Android can lose a VPN service's sticky restart bookkeeping when interface removal unbinds an already-dead process. The companion keeps a separate restart record and asks the VPN service to reread current recovery intent. It adds no timer, worker, network request, separate process or notification. The foreground VPN starts it after establishment and stops it on intentional teardown, including a temporary speed-test pause. Queued companion starts reread the store and the current service event. An already-active configuration needs no restore command; a stopped/failed event prevents delayed work from undoing a pause in the same process. A fresh process has no old event, so it restores durable intent.
 
 The companion uses normal Android service scheduling. Process recovery is best effort, and force-stop must remain effective. Always-on boot behavior, OEM restrictions and upgrade acceptance require separate device checks; the helper is not a boot receiver.
+
+## Always-on controls and notifications
+
+The service includes a `VpnControlPolicy` in each established snapshot. Android 10+
+uses `VpnService.isAlwaysOn` and `isLockdownEnabled`. Earlier versions infer Always-on
+from an unmarked system start and retain that flag until revocation; app-owned recovery
+is marked explicitly. This older-platform inference needs separate acceptance, especially
+when settings change while the process is dead. It cannot detect lockdown directly.
+
+While Always-on is known to be selected, dashboard disconnect and speed tests are
+disabled, and notification/tile actions open Android VPN settings. Resolver changes
+replace the active service configuration without an explicit stop first. The service
+rechecks policy before accepting an untargeted disconnect, so stale controls cannot
+stop a newly selected Always-on connection. Targeted failed-request cleanup and actual
+revocation still retire the affected connection. Repository disconnects require a fresh
+stop acknowledgement; a refused stop must not produce a false Disconnected state.
+
+“Block connections without VPN” blocks ordinary traffic because AeroDNS routes only
+DNS. On Android 10+, the dashboard, tile and notification report “Android is blocking
+traffic” even if DNS health succeeds. Turn off this option to allow ordinary traffic.
+Policy is refreshed on service commands and health results; a settings change may take
+until the next health result to appear in the dashboard.
+
+Foreground promotion is immediate. Subsequent notification changes are coalesced to
+the latest state at one-second intervals. The updater checks the posted text/actions
+and retries dropped updates up to ten times, stopping when notifications are disabled.
+Intentional teardown cancels pending updates before removing the notification. This
+bounds retry work and avoids reposting a retired connection; it is not a guarantee
+against every OEM notification restriction.
 
 ## Current limitations
 
