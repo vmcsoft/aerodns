@@ -37,6 +37,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Test-generated, uncompressed QNAME; only the first label selects a fixture.
         name = query[13:13 + query[12]].decode("ascii")
         body = dns_reply(query, {"large": 65507, "overflow": 65535, "medium": 4096}.get(name, 128))
+        if name == "slow":
+            with self.health_lock:
+                Handler.slow_inflight += 1
+            try:
+                time.sleep(4)
+            finally:
+                with self.health_lock:
+                    Handler.slow_inflight -= 1
         if name == "example":
             if self.path.startswith("/health-slow"):
                 with self.health_lock:

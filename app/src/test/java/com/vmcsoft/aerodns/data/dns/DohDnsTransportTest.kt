@@ -5,6 +5,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -31,6 +32,66 @@ import okhttp3.OkHttpClient
 import javax.net.ssl.SSLException
 
 class DohDnsTransportTest {
+
+    @Test fun `cancellation cancels a blocked HTTP call without waiting for its timeout`() = kotlinx.coroutines.runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val cancelled = java.util.concurrent.CountDownLatch(1)
+        val call = mockk<Call>()
+        every { call.execute() } answers {
+            entered.complete(Unit)
+            check(cancelled.await(2, java.util.concurrent.TimeUnit.SECONDS)) { "Call was not cancelled" }
+            throw IOException("cancelled")
+        }
+        every { call.cancel() } answers { cancelled.countDown() }
+        val factory = mockk<Call.Factory>()
+        every { factory.newCall(any()) } returns call
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
+            callFactoryBuilder = { _, _, _ -> factory }
+        }
+        val job = launch {
+            transport.query(byteArrayOf(1, 2, 3), "https://resolver.example/dns-query", listOf("1.1.1.1"), 5000)
+        }
+        entered.await()
+        job.cancel()
+        kotlinx.coroutines.withTimeout(1000) { job.join() }
+        assertTrue(job.isCancelled)
+        verify(exactly = 1) { call.cancel() }
+    }
+
+    @Test fun `cancellation remains attached while reading HTTP response body`() = kotlinx.coroutines.runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val cancelled = java.util.concurrent.CountDownLatch(1)
+        val source = mockk<okio.BufferedSource>()
+        every { source.read(any<Buffer>(), any()) } answers {
+            entered.complete(Unit)
+            check(cancelled.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            throw IOException("cancelled body")
+        }
+        every { source.close() } returns Unit
+        val body = object : okhttp3.ResponseBody() {
+            override fun contentType() = "application/dns-message".toMediaType()
+            override fun contentLength() = -1L
+            override fun source() = source
+        }
+        val call = mockk<Call>()
+        every { call.execute() } returns Response.Builder().request(Request.Builder().url("https://resolver.example/").build())
+            .protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body).build()
+        every { call.cancel() } answers { cancelled.countDown() }
+        val factory = mockk<Call.Factory>()
+        every { factory.newCall(any()) } returns call
+        val transport = DohDnsTransport(DohEndpointResolver(mockk())).apply {
+            callFactoryBuilder = { _, _, _ -> factory }
+        }
+        val job = launch {
+            transport.query(byteArrayOf(1, 2, 3), "https://resolver.example/dns-query", listOf("1.1.1.1"), 5000)
+        }
+        entered.await()
+        job.cancel()
+        kotlinx.coroutines.withTimeout(1000) { job.join() }
+        assertTrue(job.isCancelled)
+        verify(exactly = 1) { call.cancel() }
+        verify(exactly = 1) { source.close() }
+    }
 
     @Test
     fun `query posts DNS wire payload and returns DNS wire response`() = runTest {

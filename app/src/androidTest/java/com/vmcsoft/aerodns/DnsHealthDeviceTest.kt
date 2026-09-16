@@ -37,6 +37,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 
 @RunWith(AndroidJUnit4::class)
 class DnsHealthDeviceTest {
@@ -95,6 +98,40 @@ class DnsHealthDeviceTest {
         delay(5_500)
         assertSame(terminal, DnsVpnServiceEvents.events.replayCache.last())
         assertFalse(hasVpn())
+    }
+
+    @Test fun fastQueryFinishesWhileAnEarlierQueryIsStillWaitingThroughTun() = runBlocking {
+        val config = fixture("health-ok")
+        connect(config)
+        assertTrue(awaitHealth(config) is DnsHealth.Healthy)
+        val network = requireNotNull(connectivity.activeNetwork)
+        DatagramSocket().use { socket ->
+            network.bindSocket(socket)
+            socket.connect(InetAddress.getByName("10.0.0.1"), 53)
+            val slow = DnsWireMessage.buildAQuery(101, "slow.fixture.test")
+            socket.send(DatagramPacket(slow, slow.size))
+            val transport = DohDnsTransport(DohEndpointResolver(context))
+            withTimeout(2000) {
+                while (true) {
+                    val result = transport.query(DnsWireMessage.buildAQuery(42, "inflight.fixture.test"),
+                        requireNotNull(config.dohUrl), emptyList(), 1000, "127.0.0.1", true)
+                    if (result is DnsTransportResult.Success && result.payload.last().toInt() > 0) break
+                    delay(20)
+                }
+            }
+            val fast = DnsWireMessage.buildAQuery(102, "fast.fixture.test")
+            val start = System.nanoTime()
+            socket.send(DatagramPacket(fast, fast.size))
+            socket.soTimeout = 2000 // Slow fixture takes four seconds.
+            val reply = DatagramPacket(ByteArray(4096), 4096)
+            socket.receive(reply)
+            assertTrue("Fast reply must arrive first", DnsWireMessage.isSuccessfulResponse(reply.data, reply.length, 102))
+            println("Concurrent fast query latencyMs=${(System.nanoTime() - start) / 1_000_000}")
+            socket.soTimeout = 5000
+            reply.length = reply.data.size
+            socket.receive(reply)
+            assertTrue("Slow reply must retain its own identity", DnsWireMessage.isSuccessfulResponse(reply.data, reply.length, 101))
+        }
     }
 
     @Test fun rapidReplacementsEachPublishHealthyAsTheirFirstResult() = runBlocking {

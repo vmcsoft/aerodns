@@ -1,6 +1,7 @@
 package com.vmcsoft.aerodns.data.dns
 
 import android.net.Network
+import com.vmcsoft.aerodns.data.io.cancellableIo
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CancellationException
@@ -87,12 +88,11 @@ class DohDnsTransport @Inject constructor(
                     } else {
                         callFactoryBuilder(endpoint, timeoutMs, socketProtector)
                     }
-                    callFactory
-                        .newCall(request)
-                        .execute()
-                        .use { response ->
-                            response.toDnsTransportResult(startTime)
-                        }
+                    val call = callFactory.newCall(request)
+                    cancellableIo(cancel = { call.cancel() }) {
+                        // Keep cancellation attached through body consumption as well as headers.
+                        call.execute().use { response -> response.toDnsTransportResult(startTime) }
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=overall timeoutMs=$overallTimeoutMs")

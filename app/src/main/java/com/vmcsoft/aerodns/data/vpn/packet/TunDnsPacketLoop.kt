@@ -3,15 +3,20 @@ package com.vmcsoft.aerodns.data.vpn.packet
 import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.OsConstants
-import android.util.Log
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
+import com.vmcsoft.aerodns.data.io.cancellableIo
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -28,11 +33,11 @@ class TunDnsPacketLoop @Inject constructor(
         config: DnsConnectionConfig,
         mtu: Int,
         timeoutMs: Int
-    ) {
-        withContext(Dispatchers.IO) {
-            val input = FileInputStream(vpnInterface.fileDescriptor)
-            val output = FileOutputStream(vpnInterface.fileDescriptor)
-            run(input, output, config, mtu, timeoutMs)
+    ) = withContext(Dispatchers.IO) {
+        // Cancelling a blocked reader must not close the service-owned descriptor:
+        // it remains alive until establish() finishes a replacement handover.
+        ParcelFileDescriptor.AutoCloseInputStream(vpnInterface.dup()).use { input ->
+            run(input, FileOutputStream(vpnInterface.fileDescriptor), config, mtu, timeoutMs)
         }
     }
 
@@ -43,91 +48,61 @@ class TunDnsPacketLoop @Inject constructor(
         mtu: Int,
         timeoutMs: Int,
         shouldContinue: () -> Boolean = { true }
-    ) {
+    ) = coroutineScope {
         require(mtu > 0) { "MTU must be positive" }
-
-        val buffer = ByteArray(mtu)
-        var packetsRead = 0L
-        var packetsIgnored = 0L
-        var responsesWritten = 0L
-
-        DnsDiagnosticLog.i(
-            TAG,
-            "packet_loop_start provider=${config.displayName} protocol=${config.protocol} " +
-                "packetLoop=${config.enableExperimentalPacketLoop} mtu=$mtu timeoutMs=$timeoutMs " +
-                "upstreams=${config.upstreamAddresses}"
-        )
-
-        while (currentCoroutineContext().isActive && shouldContinue()) {
-            val bytesRead = try {
-                input.read(buffer)
-            } catch (e: IOException) {
-                Log.w(TAG, "Stopping TUN DNS packet loop after read failure", e)
-                DnsDiagnosticLog.w(
-                    TAG,
-                    "packet_loop_stop reason=read_failure packetsRead=$packetsRead " +
-                        "responsesWritten=$responsesWritten packetsIgnored=$packetsIgnored",
-                    e
-                )
-                currentCoroutineContext().ensureActive()
-                throw e
-            }
-
-            if (bytesRead <= 0) {
-                DnsDiagnosticLog.i(
-                    TAG,
-                    "packet_loop_stop reason=eof packetsRead=$packetsRead " +
-                        "responsesWritten=$responsesWritten packetsIgnored=$packetsIgnored"
-                )
-                break
-            }
-
-            packetsRead += 1
-            DnsDiagnosticLog.d(TAG, "packet_loop_read count=$packetsRead bytes=$bytesRead")
-            val packet = buffer.copyOf(bytesRead)
-            val response = packetHandler.handlePacket(packet, config, timeoutMs)
-            // A cancelled upstream may finish a blocking call late. Never write its reply.
-            currentCoroutineContext().ensureActive()
-            if (response != null) {
-                try {
-                    output.write(response)
-                    output.flush()
-                    responsesWritten += 1
-                    DnsDiagnosticLog.d(
-                        TAG,
-                        "packet_loop_write count=$responsesWritten responseBytes=${response.size} " +
-                            "packetsRead=$packetsRead"
-                    )
-                } catch (e: IOException) {
-                    currentCoroutineContext().ensureActive()
-                    val errno = (e.cause as? ErrnoException)?.errno
-                    // Android can reject one otherwise frameable datagram under buffer
-                    // pressure or a device size limit. That does not invalidate the TUN fd.
-                    if (errno == OsConstants.ENOBUFS || errno == OsConstants.EMSGSIZE) {
-                        DnsDiagnosticLog.w(TAG, "packet_loop_dropped_response errno=$errno bytes=${response.size}")
-                        continue
+        val pending = Channel<PendingPacket>(QUEUE_CAPACITY)
+        val writer = Mutex()
+        // All workers, queued packets and writes belong to this invocation/interface.
+        repeat(WORKER_COUNT) {
+            launch(start = CoroutineStart.UNDISPATCHED) {
+                for (packet in pending) {
+                    ensureActive()
+                    val remaining = ((packet.deadlineNanos - System.nanoTime() + 999_999) / 1_000_000).toInt()
+                    if (remaining <= 0) continue
+                    val response = withTimeoutOrNull(remaining.toLong()) {
+                        // Keep transport settings stable for HTTP client reuse; this scope
+                        // enforces the shorter remaining admission budget by cancelling I/O.
+                        packetHandler.handlePacket(packet.bytes, config, timeoutMs)
+                    } ?: continue
+                    writer.withLock {
+                        // A blocking upstream may return after its connection was cancelled.
+                        ensureActive()
+                        try {
+                            output.write(response)
+                            output.flush()
+                        } catch (e: IOException) {
+                            ensureActive()
+                            val errno = (e.cause as? ErrnoException)?.errno
+                            if (errno != OsConstants.ENOBUFS && errno != OsConstants.EMSGSIZE) throw e
+                            DnsDiagnosticLog.w(TAG, "packet_loop_dropped_response errno=$errno bytes=${response.size}")
+                        }
                     }
-                    Log.w(TAG, "Stopping TUN DNS packet loop after write failure", e)
-                    DnsDiagnosticLog.w(
-                        TAG,
-                        "packet_loop_stop reason=write_failure packetsRead=$packetsRead " +
-                            "responsesWritten=$responsesWritten packetsIgnored=$packetsIgnored",
-                        e
-                    )
-                    currentCoroutineContext().ensureActive()
-                    throw e
                 }
-            } else {
-                packetsIgnored += 1
-                DnsDiagnosticLog.d(
-                    TAG,
-                    "packet_loop_no_response packetsIgnored=$packetsIgnored packetsRead=$packetsRead"
-                )
             }
+        }
+        try {
+            val buffer = ByteArray(mtu)
+            while (isActive && shouldContinue()) {
+                val bytesRead = cancellableIo(cancel = { input.close() }) { input.read(buffer) }
+                ensureActive()
+                if (bytesRead <= 0) break
+                // Never suspend the reader behind a full queue or create a job per packet.
+                // Drop newest on overload. UDP callers time out/retry; no provider fallback.
+                if (pending.trySend(PendingPacket(buffer.copyOf(bytesRead), System.nanoTime() + timeoutMs * 1_000_000L)).isFailure) {
+                    DnsDiagnosticLog.d(TAG, "packet_loop_dropped_query reason=queue_full")
+                }
+            }
+        } finally {
+            // EOF drains accepted work. Cancellation/fault cancels every worker instead.
+            pending.close()
         }
     }
 
-    private companion object {
+    private data class PendingPacket(val bytes: ByteArray, val deadlineNanos: Long)
+
+    internal companion object {
         private const val TAG = "TunDnsPacketLoop"
+        const val WORKER_COUNT = 4
+        const val QUEUE_CAPACITY = 32
     }
 }
