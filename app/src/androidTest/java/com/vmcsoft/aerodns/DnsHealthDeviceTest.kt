@@ -8,6 +8,16 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
+import android.os.ParcelFileDescriptor
+import androidx.test.filters.SdkSuppress
+import com.vmcsoft.aerodns.validation.ValidationComponentFactory
+import com.vmcsoft.aerodns.validation.ValidationRepositories
+import dagger.hilt.android.EntryPointAccessors
+import com.vmcsoft.aerodns.domain.model.ConnectionState
+import com.vmcsoft.aerodns.data.dns.DohDnsTransport
+import com.vmcsoft.aerodns.data.dns.DohEndpointResolver
+import com.vmcsoft.aerodns.data.dns.DnsWireMessage
+import com.vmcsoft.aerodns.data.dns.DnsTransportResult
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
@@ -100,6 +110,37 @@ class DnsHealthDeviceTest {
         val failed = awaitHealth(failing)
         assertTrue(failed.toString(), failed is DnsHealth.Unhealthy)
         assertNotification(failing, failed)
+    }
+
+    @Test @SdkSuppress(minSdkVersion = 28)
+    fun liveDescriptorFailureClearsServiceAndRepositoryWithoutAnActivity() = runBlocking {
+        val repository = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
+        delay(1000) // Initial physical-network callbacks must settle before connection.
+        val config = fixture("health-slow")
+        connect(config)
+        val transport = DohDnsTransport(DohEndpointResolver(context))
+        withTimeout(5000) {
+            while (true) {
+                val response = transport.query(DnsWireMessage.buildAQuery(42, "inflight.fixture.test"),
+                    requireNotNull(config.dohUrl), emptyList(), 1000, "127.0.0.1", true)
+                if (response is DnsTransportResult.Success && response.payload.last().toInt() > 0) break
+                delay(50)
+            }
+        }
+        val service = requireNotNull(ValidationComponentFactory.vpn.get())
+        val field = DnsVpnService::class.java.getDeclaredField("vpnInterface").apply { isAccessible = true }
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            (field.get(service) as ParcelFileDescriptor).close()
+        }
+        val failed = withTimeout(8000) { DnsVpnServiceEvents.events.first {
+            it is DnsVpnServiceEvent.Failed && it.config == config
+        } } as DnsVpnServiceEvent.Failed
+        assertTrue(failed.message, failed.message.startsWith("DNS forwarding"))
+        withTimeout(5000) { repository.connectionState.first { it is ConnectionState.Error } }
+        withTimeout(5000) {
+            while (hasVpn() || notifications.activeNotifications.any { it.id == 1001 }) delay(50)
+        }
+        assertTrue(context.getSharedPreferences("vpn_recovery", Context.MODE_PRIVATE).all.isEmpty())
     }
 
     private fun fixture(path: String): DnsConnectionConfig {

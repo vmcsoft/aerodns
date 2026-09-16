@@ -25,6 +25,7 @@ def dns_reply(query, size):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     health_counts = {}
+    slow_inflight = 0
     health_lock = threading.Lock()
 
     def do_POST(self):
@@ -38,7 +39,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = dns_reply(query, {"large": 65507, "overflow": 65535, "medium": 4096}.get(name, 128))
         if name == "example":
             if self.path.startswith("/health-slow"):
-                time.sleep(2)
+                with self.health_lock:
+                    Handler.slow_inflight += 1
+                try:
+                    time.sleep(2)
+                finally:
+                    with self.health_lock:
+                        Handler.slow_inflight -= 1
             with self.health_lock:
                 count = self.health_counts.get(self.path, 0) + 1
                 self.health_counts[self.path] = count
@@ -46,6 +53,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             header = query[:2] + struct.pack("!5H", 0x8182 if failed else 0x8180, 1, 0 if failed else 1, 0, 0)
             answer = b"" if failed else struct.pack("!HHHIH4B", 0xC00C, 1, 1, 60, 4, 93, 184, 216, 34)
             body = header + query[12:] + answer
+        if name == "inflight":
+            with self.health_lock:
+                count = min(255, Handler.slow_inflight)
+            body = (query[:2] + struct.pack("!5H", 0x8180, 1, 1, 0, 0) + query[12:] +
+                    struct.pack("!HHHIH4B", 0xC00C, 1, 1, 0, 4, 0, 0, 0, count))
         if name == "short":
             body = b"bad"
         elif name == "mismatch":
