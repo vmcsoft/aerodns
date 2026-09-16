@@ -257,6 +257,12 @@ class DnsHealthDeviceTest {
             while (hasVpn() || notifications.activeNotifications.any { it.id == 1001 }) delay(50)
         }
         assertTrue(context.getSharedPreferences("vpn_recovery", Context.MODE_PRIVATE).all.isEmpty())
+        @Suppress("DEPRECATION")
+        fun recoveryRunning() = context.getSystemService(android.app.ActivityManager::class.java)
+            .getRunningServices(Int.MAX_VALUE).any {
+                it.service.className == com.vmcsoft.aerodns.data.vpn.VpnRecoveryService::class.java.name && it.started
+            }
+        withTimeout(5000) { while (recoveryRunning()) delay(50) }
     }
 
     private suspend fun fixtureQueryCount(config: DnsConnectionConfig): Int {

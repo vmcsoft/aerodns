@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--serial", required=True)
-    parser.add_argument("--scenario", choices=("process-death", "reboot", "disconnect-reboot"), required=True)
+    parser.add_argument("--scenario", choices=("process-death", "reboot", "disconnect-reboot", "force-stop"), required=True)
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence outside the repository")
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
@@ -99,6 +99,14 @@ def main():
             after, elapsed = wait_healthy(previous_request=before["record"]["requestId"])
             assert after["pid"] != pid, "The original process did not die"
             evidence.update(after=after, recovery_seconds=elapsed)
+        elif args.scenario == "force-stop":
+            adb("shell", "am", "force-stop", PACKAGE)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                after = snapshot()
+                assert not after["pid"] and not after["vpn"] and after["status"] is None, after
+                time.sleep(1)
+            evidence["after"] = after
         elif args.scenario == "reboot":
             assert evidence["always_on"] == PACKAGE, "Enable Always-on for this validation package in Settings first"
             assert evidence["lockdown"] != "1", "Disable lockdown for the recovery-only reboot check"
@@ -111,7 +119,7 @@ def main():
             evidence["before_reboot"] = observe_off(10)
             evidence["boot_seconds"] = reboot()
             evidence["after"] = observe_off(30)
-        if args.scenario != "disconnect-reboot":
+        if args.scenario in ("process-death", "reboot"):
             original = {k: v for k, v in before["record"].items() if k != "requestId"}
             restored = {k: v for k, v in evidence["after"]["record"].items() if k != "requestId"}
             assert original == restored, "Recovery changed the saved configuration"

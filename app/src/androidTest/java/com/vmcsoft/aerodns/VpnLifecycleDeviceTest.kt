@@ -1,5 +1,6 @@
 package com.vmcsoft.aerodns
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -9,6 +10,8 @@ import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
+import com.vmcsoft.aerodns.data.vpn.VpnRecoveryService
+import com.vmcsoft.aerodns.validation.ValidationComponentFactory
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
@@ -159,6 +162,97 @@ class VpnLifecycleDeviceTest {
         }
     }
 
+    @Test
+    fun delayedCompanionStartCannotRestoreAnExplicitDisconnect() {
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, standard()))
+        awaitRecoveryService(true)
+        assertTrue(command(DnsVpnService.ACTION_DISCONNECT) is DnsVpnServiceEvent.Stopped)
+        awaitNoVpn()
+        context.startService(Intent(context, VpnRecoveryService::class.java))
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        Thread.sleep(500)
+        awaitRecoveryService(false)
+        assertFalse(hasVpn())
+        assertTrue(recovery.all.isEmpty())
+    }
+
+    @Test
+    fun delayedCompanionStartDoesNotEndAnIntentionalPause() {
+        val config = standard()
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, config))
+        assertTrue(command(DnsVpnService.ACTION_DISCONNECT, preserveRecovery = true) is DnsVpnServiceEvent.Stopped)
+        awaitNoVpn()
+        context.startService(Intent(context, VpnRecoveryService::class.java))
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        Thread.sleep(500)
+        awaitRecoveryService(false)
+        assertFalse(hasVpn())
+        assertEquals(config.connectionRequestId, recovery.getString("requestId", null))
+    }
+
+    @Test
+    fun companionDoesNotReannounceAnActiveConnection() = runBlocking {
+        val config = standard()
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, config))
+        val settled = withTimeout(8000) { DnsVpnServiceEvents.events.first {
+            it is DnsVpnServiceEvent.Established && it.config == config &&
+                it.health != com.vmcsoft.aerodns.domain.model.DnsHealth.Checking
+        } }
+        context.startService(Intent(context, VpnRecoveryService::class.java))
+        kotlinx.coroutines.delay(500)
+        assertSame("Tracking a live connection must not resend its startup/status", settled,
+            DnsVpnServiceEvents.events.replayCache.last())
+        awaitRecoveryService(true)
+    }
+
+    @Test
+    fun companionUsesTheLatestConfigurationWithoutReplacingItsRequest() {
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, standard()))
+        val latest = standard().copy(serverId = "latest", upstreamAddresses = listOf("9.9.9.9"))
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, latest))
+        context.startService(Intent(context, VpnRecoveryService::class.java))
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        Thread.sleep(500)
+        awaitRecoveryService(true)
+        assertEquals(latest.connectionRequestId, recovery.getString("requestId", null))
+        assertEquals(latest, (DnsVpnServiceEvents.events.replayCache.last() as DnsVpnServiceEvent.Established).config)
+        awaitDns("9.9.9.9")
+    }
+
+    @Test
+    @androidx.test.filters.SdkSuppress(minSdkVersion = 28)
+    fun revocationRetiresTheCompanionAndRecoveryIntent() {
+        assertEstablished(command(DnsVpnService.ACTION_CONNECT, standard()))
+        awaitRecoveryService(true)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            requireNotNull(ValidationComponentFactory.vpn.get()).onRevoke()
+        }
+        awaitNoVpn()
+        assertTrue(recovery.all.isEmpty())
+    }
+
+    @Test
+    fun corruptCompanionRecoveryStopsWithoutStartingVpn() {
+        recovery.edit().putInt("schema", 1).putString("protocol", "FUTURE").commit()
+        context.startService(Intent(context, VpnRecoveryService::class.java))
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (recovery.all.isNotEmpty() && System.nanoTime() < deadline) Thread.sleep(50)
+        assertTrue(recovery.all.isEmpty())
+        awaitRecoveryService(false)
+        assertFalse(hasVpn())
+    }
+
+    @Suppress("DEPRECATION") // Android exposes this app's own services to its test process.
+    private fun awaitRecoveryService(running: Boolean) {
+        val manager = context.getSystemService(ActivityManager::class.java)
+        val deadline = System.nanoTime() + 5_000_000_000L
+        fun present() = manager.getRunningServices(Int.MAX_VALUE).any {
+            it.service.className == VpnRecoveryService::class.java.name && it.started
+        }
+        while (present() != running && System.nanoTime() < deadline) Thread.sleep(50)
+        assertEquals("Unexpected recovery companion lifetime", running, present())
+    }
+
     private fun standard() = DnsConnectionConfig("lifecycle-test", "Lifecycle test", DnsProtocol.STANDARD,
         listOf("8.8.8.8"), connectionRequestId = "test-${System.nanoTime()}")
 
@@ -203,6 +297,7 @@ class VpnLifecycleDeviceTest {
         assertFalse("VPN interface not removed", hasVpn())
         // Let Service.onDestroy finish before starting a new instance.
         Thread.sleep(150)
+        awaitRecoveryService(false)
     }
 
     private fun awaitDns(address: String) {

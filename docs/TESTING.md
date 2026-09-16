@@ -88,7 +88,9 @@ Run the process-death scenario once with Always-on disabled and separately with 
 in Android VPN Settings. Use `--scenario reboot` for Always-on startup, with
 “Block connections without VPN” disabled. Use `--scenario disconnect-reboot` while
 connected to check that the production disconnect command clears recovery and remains
-off for 10 seconds before reboot and 30 seconds after boot.
+off for 10 seconds before reboot and 30 seconds after boot. `--scenario force-stop`
+checks that an explicit Android force-stop leaves the process, VPN and notification
+absent for 30 seconds; retained configuration is not treated as a running connection.
 
 Recovery requires a live process, active VPN, healthy service notification, a new request
 identity, and unchanged saved configuration. The observer never launches the app or
@@ -99,7 +101,7 @@ validated on API 36 and must be checked before using other Android versions.
 
 Keep JSON/log evidence outside Git. Disconnect, clear the validation package's Always-on
 setting, stop the fixture, and shut down the owned emulator after the run. A passing
-emulator test does not establish OEM, low-memory eviction, force-stop, lockdown, or
+emulator test does not establish OEM, low-memory eviction, lockdown, or
 production-upgrade behavior.
 
 ## Manual regression checklist

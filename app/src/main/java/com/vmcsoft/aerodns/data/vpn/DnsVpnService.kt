@@ -225,6 +225,9 @@ class DnsVpnService : VpnService() {
             }
 
             isRunning = true
+            // Keep a started record independent of Android's binding to this VPN.
+            // Already foreground here, so the same-process companion may run normally.
+            startService(Intent(this, VpnRecoveryService::class.java))
 
             updateForegroundNotification(dnsConfig)
             startPacketLoopIfEnabled(dnsConfig)
@@ -264,7 +267,13 @@ class DnsVpnService : VpnService() {
             }
         } finally {
             try {
-                releaseInterface()
+                // Explicit stop, failure and revocation retire both records. Lifecycle
+                // destruction preserves the companion so Android can restore intent.
+                try {
+                    if (stopService) stopService(Intent(this, VpnRecoveryService::class.java))
+                } finally {
+                    releaseInterface()
+                }
             } finally {
                 currentDnsConfig = null
                 if (isForegroundStarted) {
