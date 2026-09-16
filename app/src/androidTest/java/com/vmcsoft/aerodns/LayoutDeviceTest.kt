@@ -24,6 +24,7 @@ import com.vmcsoft.aerodns.presentation.components.DnsSelectorBottomSheet
 import com.vmcsoft.aerodns.presentation.components.SpeedTestDialog
 import com.vmcsoft.aerodns.presentation.components.SpeedTestState
 import com.vmcsoft.aerodns.presentation.theme.AeroDNSTheme
+import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,7 +36,7 @@ class LayoutDeviceTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val server = DnsServer("layout-fixture", "Layout test resolver", "1.1.1.1", "1.0.0.1",
         ipv6Primary = "2606:4700:4700::1111", description = "Resolver for layout validation", isCustom = true)
-    private val results = (1..20).map { SpeedTestResult(server.copy(id = "layout-$it", name = "Layout resolver $it"), it * 10L, true) }
+    private val results = (1..20).map { SpeedTestResult(server.copy(id = "layout-$it", name = "Layout resolver $it"), it * 10L, true, sampleCount = 10) }
 
     @Test fun dashboardAndSelector() {
         compose.onNodeWithText("Change DNS").assertIsDisplayed().performClick()
@@ -118,6 +119,30 @@ class LayoutDeviceTest {
     @Test fun speedTestCompleted() = speed(SpeedTestState.Completed(results), "speed-completed")
     @Test fun speedTestError() = speed(SpeedTestState.Error("DNS request timed out. Please check the connection and retry."), "speed-error")
     @Test fun speedTestIdle() = speed(SpeedTestState.Idle, "speed-idle")
+
+    @Test fun speedTestProtocolSamplesAndActivation() {
+        val full = results.first().copy(testedProtocol = DnsProtocol.DOH)
+        val partial = full.copy(server = server.copy(id = "partial", name = "Partial resolver"), sampleCount = 2, timedOut = true)
+        val failed = full.copy(server = server.copy(id = "failed", name = "Unavailable resolver"),
+            sampleCount = 0, isReachable = false, failureReason = "Protocol unavailable")
+        var selected: SpeedTestResult? = null
+        content { SpeedTestDialog(SpeedTestState.Completed(listOf(full, partial, failed)), {}, { selected = it }) }
+        compose.onNodeWithText("Activate Selected").assertIsNotEnabled()
+        compose.onNodeWithText("10/10 replies").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("2/10 replies · Time limit reached"))
+        compose.onNodeWithText("2/10 replies · Time limit reached").performScrollTo().assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Partial resolver"))
+        compose.onNodeWithText("Partial resolver").performClick()
+        compose.onNodeWithText("Activate Selected").assertIsEnabled().performClick()
+        assertEquals(DnsProtocol.DOH, selected?.testedProtocol)
+        assertEquals(2, selected?.sampleCount)
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Protocol unavailable"))
+        // Exercise real scrolling too: lazy-list item scrolling can leave a tall
+        // card's last line below the viewport at 200% font scale.
+        compose.onNode(hasScrollToIndexAction()).performTouchInput { swipeUp() }
+        compose.onNodeWithText("Protocol unavailable").assertIsDisplayed()
+        capture("speed-protocol-samples")
+    }
 
     private fun speed(state: SpeedTestState, name: String) {
         content { SpeedTestDialog(state, {}, {}) }

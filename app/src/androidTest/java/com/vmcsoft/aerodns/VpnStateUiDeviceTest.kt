@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.view.WindowManager
+import androidx.lifecycle.ViewModelProvider
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -26,6 +27,9 @@ import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
 import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.DnsServer
+import com.vmcsoft.aerodns.domain.model.SpeedTestResult
+import com.vmcsoft.aerodns.presentation.dashboard.DashboardViewModel
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.statusDescription
 import com.vmcsoft.aerodns.presentation.MainActivity
@@ -74,6 +78,28 @@ class VpnStateUiDeviceTest {
             shell("cmd statusbar collapse")
             if (addedTile) shell("cmd statusbar remove-tile $component")
         }
+    }
+
+    @Test fun activatingSpeedTestResultConnectsWithItsMeasuredProtocol() {
+        val config = fixture("health-ok")
+        val server = DnsServer("measured-doh", "Measured HTTPS resolver", "192.0.2.53",
+            dohUrl = config.dohUrl, customBootstrapIp = "127.0.0.1", allowUntrustedCertificates = true,
+            isCustom = true, supportedProtocols = listOf(DnsProtocol.STANDARD, DnsProtocol.DOH))
+        compose.activityRule.scenario.onActivity { activity ->
+            val viewModel = ViewModelProvider(activity)[DashboardViewModel::class.java]
+            viewModel.onDnsProtocolSelected(DnsProtocol.STANDARD)
+            viewModel.onSpeedTestResultSelected(SpeedTestResult(server, 20, true, sampleCount = 10,
+                testedProtocol = DnsProtocol.DOH))
+        }
+        waitState { it is ConnectionState.Connected && it.server.id == server.id && it.dnsHealth is DnsHealth.Healthy }
+        val active = (repository.connectionState.value as ConnectionState.Connected).activeConfig!!
+        assertEquals(DnsProtocol.DOH, active.protocol)
+        assertEquals(server.dohUrl, active.dohUrl)
+        assertEquals("127.0.0.1", active.customBootstrapIp)
+        assertTrue(active.allowUntrustedCertificates)
+        assertDashboard("Connected")
+        compose.onNode(hasText("DoH") and hasAnySibling(hasText("Protocol")), useUnmergedTree = true)
+            .assertIsDisplayed()
     }
 
     @Test fun dashboardAndTileUseActiveConfigurationAcrossRecreationAndDisconnect() {

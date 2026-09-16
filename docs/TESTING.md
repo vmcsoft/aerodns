@@ -71,7 +71,17 @@ VPN permission must be granted interactively before tests that establish `VpnSer
 - Reboot with Always-on VPN enabled.
 - Force-stop and reopen the application.
 - Change networks during connection and during a speed test.
-- Cancel a speed test and confirm the previous connection is restored.
+
+### Speed tests
+
+- Select Standard or DoH before starting. Confirm results identify that protocol; unsupported profiles must be unavailable rather than measured with another transport.
+- For a provider with both ordinary DNS addresses and a DoH URL, confirm a DoH run sends HTTPS DNS requests. A failed DoH request must not fall back to UDP.
+- Verify custom endpoint discovery, explicit bootstrap overrides and certificate opt-in follow the same rules as connections.
+- Simulate failed requests and a provider timeout. Confirm completed samples remain visible, partial results show successful replies out of ten, and more successful replies rank before lower latency.
+- Activate a result and confirm the running service uses the measured protocol and profile.
+- Cancel or retest while connected. Restore the prior configuration once if there is no newer choice; a newer selection or explicit disconnect must survive old cleanup.
+
+The displayed latency uses successful DNS-query samples, trimming the fastest and slowest when at least three succeed. It is affected by resolver caching and connection reuse; it does not include DoH endpoint discovery or prove continuing DNS health.
 
 ## Logs
 

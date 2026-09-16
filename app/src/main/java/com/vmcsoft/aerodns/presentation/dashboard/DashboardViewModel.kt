@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
+import com.vmcsoft.aerodns.domain.model.isUserSelectable
 import com.vmcsoft.aerodns.domain.model.SpeedTestResult
 import com.vmcsoft.aerodns.domain.model.resolveSelectedProtocol
 import com.vmcsoft.aerodns.domain.model.selectableProtocols
@@ -202,10 +203,16 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    fun onSelectAndConnectDns(server: DnsServer) {
+    fun onSpeedTestResultSelected(result: SpeedTestResult) {
+        if (!result.isReachable || !result.testedProtocol.isUserSelectable() ||
+            result.testedProtocol !in result.server.supportedProtocols) return
+        onSelectAndConnectDns(result.server, result.testedProtocol)
+    }
+
+    fun onSelectAndConnectDns(server: DnsServer, protocol: DnsProtocol = resolveProtocolForServer(server)) {
         vpnRepository.invalidateSpeedTestRestoration()
         _selectedServer.value = server
-        val resolvedProtocol = resolveProtocolForServer(server)
+        val resolvedProtocol = protocol
         _selectedProtocol.value = resolvedProtocol
 
         viewModelScope.launch {
@@ -456,6 +463,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     private fun runSpeedTest() {
+        val protocol = _selectedProtocol.value
         val generation = ++speedTestGeneration
         val previous = speedTestJob
         previous?.cancel()
@@ -475,11 +483,11 @@ class DashboardViewModel @Inject constructor(
                 }
                 currentCoroutineContext().ensureActive()
                 val completedResults = mutableListOf<SpeedTestResult>()
-                val results = runSpeedTestUseCase { completed, total, result ->
+                val results = runSpeedTestUseCase(protocol) { completed, total, result ->
                     if (owner.isActive && generation == speedTestGeneration && _showSpeedTestDialog.value) {
                         completedResults.add(result)
                         _speedTestState.value = SpeedTestState.Running(completed, total,
-                            completedResults.sortedBy { it.averageLatencyMs })
+                            completedResults.sortedWith(SpeedTestResult.ranking))
                     }
                 }
                 if (owner.isActive && generation == speedTestGeneration && _showSpeedTestDialog.value) {

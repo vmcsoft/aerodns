@@ -105,6 +105,10 @@ fun SpeedTestDialog(
                         modifier = Modifier.heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        item {
+                            Text("More successful replies rank first. Latency uses successful queries.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         itemsIndexed(state.results) { _, result ->
                             SpeedTestResultCard(
                                 result = result,

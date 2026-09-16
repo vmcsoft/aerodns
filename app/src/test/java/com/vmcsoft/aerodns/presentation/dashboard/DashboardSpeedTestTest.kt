@@ -41,7 +41,7 @@ class DashboardSpeedTestTest {
     @After fun cleanup() { vm.viewModelScope.cancel(); Dispatchers.resetMain(); unmockkStatic(Log::class) }
 
     @Test fun `completion restores once and closing completed dialog does not restore again`() = runTest {
-        coEvery { speed(any()) } returns listOf(result)
+        coEvery { speed(any(), any()) } returns listOf(result)
         runCurrent(); vm.onShowSpeedTest(); runCurrent()
         assertEquals(listOf("pause", "restore"), repository.calls)
         assertEquals(SpeedTestState.Completed(listOf(result)), vm.speedTestState.value)
@@ -50,7 +50,7 @@ class DashboardSpeedTestTest {
     }
 
     @Test fun `dismiss cancels measurement and restores previous connection once`() = runTest {
-        coEvery { speed(any()) } coAnswers { awaitCancellation() }
+        coEvery { speed(any(), any()) } coAnswers { awaitCancellation() }
         runCurrent(); vm.onShowSpeedTest(); runCurrent(); vm.onDismissSpeedTest(); runCurrent()
         assertEquals(listOf("pause", "restore"), repository.calls)
         assertEquals(SpeedTestState.Idle, vm.speedTestState.value)
@@ -59,7 +59,7 @@ class DashboardSpeedTestTest {
     @Test fun `fast selection invalidates cleanup before preference persistence suspends`() = runTest {
         val saved = CompletableDeferred<Unit>()
         coEvery { preferences.setSelectedDnsId(fastest.id) } coAnswers { saved.await() }
-        coEvery { speed(any()) } coAnswers { awaitCancellation() }
+        coEvery { speed(any(), any()) } coAnswers { awaitCancellation() }
         runCurrent(); vm.onShowSpeedTest(); runCurrent()
         vm.onSelectAndConnectDns(fastest); vm.onDismissSpeedTest(); runCurrent()
         assertFalse(repository.calls.contains("restore"))
@@ -71,9 +71,9 @@ class DashboardSpeedTestTest {
     @Test fun `retest inherits pause and ignores retired progress while awaiting cancellation`() = runTest {
         val finishOld = CompletableDeferred<Unit>()
         var runs = 0
-        coEvery { speed(any()) } coAnswers {
+        coEvery { speed(any(), any()) } coAnswers {
             if (++runs == 1) {
-                val progress = firstArg<(Int, Int, SpeedTestResult) -> Unit>()
+                val progress = secondArg<(Int, Int, SpeedTestResult) -> Unit>()
                 withContext(NonCancellable) { finishOld.await(); progress(1, 1, result) }
                 emptyList()
             } else listOf(result)
@@ -88,27 +88,27 @@ class DashboardSpeedTestTest {
 
     @Test fun `immediate dismiss of a waiting retest still cleans up the inherited pause`() = runTest {
         val finishOld = CompletableDeferred<Unit>()
-        coEvery { speed(any()) } coAnswers { withContext(NonCancellable) { finishOld.await() }; emptyList() }
+        coEvery { speed(any(), any()) } coAnswers { withContext(NonCancellable) { finishOld.await() }; emptyList() }
         runCurrent(); vm.onShowSpeedTest(); runCurrent()
         vm.onShowSpeedTest(); vm.onDismissSpeedTest(); runCurrent()
         finishOld.complete(Unit); runCurrent()
         assertEquals(listOf("pause", "restore"), repository.calls)
         assertEquals(SpeedTestState.Idle, vm.speedTestState.value)
-        coVerify(exactly = 1) { speed(any()) }
+        coVerify(exactly = 1) { speed(any(), any()) }
     }
 
     @Test fun `clearing view model during pause acknowledgement still restores`() = runTest {
         val paused = CompletableDeferred<Unit>()
         repository.pauseGate = paused
-        coEvery { speed(any()) } returns emptyList()
+        coEvery { speed(any(), any()) } returns emptyList()
         runCurrent(); vm.onShowSpeedTest(); runCurrent(); vm.viewModelScope.cancel()
         paused.complete(Unit); runCurrent()
         assertEquals(listOf("pause", "restore"), repository.calls)
-        coVerify(exactly = 0) { speed(any()) }
+        coVerify(exactly = 0) { speed(any(), any()) }
     }
 
     @Test fun `measurement failure restores and retains visible error`() = runTest {
-        coEvery { speed(any()) } throws IllegalStateException("fixture failed")
+        coEvery { speed(any(), any()) } throws IllegalStateException("fixture failed")
         runCurrent(); vm.onShowSpeedTest(); runCurrent()
         assertEquals(listOf("pause", "restore"), repository.calls)
         assertEquals(SpeedTestState.Error("fixture failed"), vm.speedTestState.value)
@@ -116,7 +116,7 @@ class DashboardSpeedTestTest {
 
     @Test fun `initially disconnected measurement never creates a connection`() = runTest {
         repository.connectionState.value = ConnectionState.Disconnected
-        coEvery { speed(any()) } returns emptyList()
+        coEvery { speed(any(), any()) } returns emptyList()
         runCurrent(); vm.onShowSpeedTest(); runCurrent()
         assertEquals(emptyList<String>(), repository.calls)
         assertEquals(ConnectionState.Disconnected, repository.connectionState.value)
@@ -124,11 +124,44 @@ class DashboardSpeedTestTest {
 
     @Test fun `external disconnect supersedes measurement restoration`() = runTest {
         val measured = CompletableDeferred<Unit>()
-        coEvery { speed(any()) } coAnswers { measured.await(); emptyList() }
+        coEvery { speed(any(), any()) } coAnswers { measured.await(); emptyList() }
         runCurrent(); vm.onShowSpeedTest(); runCurrent(); repository.disconnect()
         measured.complete(Unit); runCurrent()
         assertFalse(repository.calls.contains("restore"))
         assertEquals(ConnectionState.Disconnected, repository.connectionState.value)
+    }
+
+    @Test fun `measurement snapshots selected protocol before waiting for pause`() = runTest {
+        val dual = original.copy(dohUrl = "https://dns.example/dns-query", supportedProtocols = listOf(DnsProtocol.STANDARD, DnsProtocol.DOH))
+        val paused = CompletableDeferred<Unit>()
+        repository.pauseGate = paused
+        coEvery { speed(any(), any()) } returns emptyList()
+        runCurrent(); vm.onDnsServerSelected(dual); vm.onDnsProtocolSelected(DnsProtocol.DOH); runCurrent()
+        vm.onShowSpeedTest(); runCurrent()
+        vm.onDnsProtocolSelected(DnsProtocol.STANDARD); runCurrent()
+        paused.complete(Unit); runCurrent()
+        coVerify(exactly = 1) { speed(DnsProtocol.DOH, any()) }
+    }
+
+    @Test fun `activating a result persists its tested protocol before connecting`() = runTest {
+        val dual = fastest.copy(dohUrl = "https://dns.example/dns-query", supportedProtocols = listOf(DnsProtocol.STANDARD, DnsProtocol.DOH))
+        runCurrent()
+        vm.onSpeedTestResultSelected(result.copy(server = dual, testedProtocol = DnsProtocol.DOH))
+        advanceUntilIdle()
+        assertEquals(DnsProtocol.DOH, vm.selectedProtocol.value)
+        coVerifyOrder {
+            preferences.setSelectedDnsId(dual.id)
+            preferences.setSelectedDnsProtocol(DnsProtocol.DOH)
+        }
+        assertEquals(dual, (repository.connectionState.value as ConnectionState.Connected).server)
+    }
+
+    @Test fun `unreachable or unsupported speed results cannot activate a connection`() = runTest {
+        runCurrent()
+        vm.onSpeedTestResultSelected(result.copy(isReachable = false))
+        vm.onSpeedTestResultSelected(result.copy(testedProtocol = DnsProtocol.DOH))
+        runCurrent()
+        assertTrue(repository.calls.isEmpty())
     }
 
     private inner class TestVpn : VpnRepository {

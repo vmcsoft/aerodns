@@ -195,7 +195,7 @@ fun DashboardScreen(
                     state = speedTestState,
                     onDismiss = { viewModel.onDismissSpeedTest() },
                     onSelectDns = { result ->
-                        viewModel.onSelectAndConnectDns(result.server)
+                        viewModel.onSpeedTestResultSelected(result)
                         viewModel.onDismissSpeedTest()
                     },
                     onRetest = {
