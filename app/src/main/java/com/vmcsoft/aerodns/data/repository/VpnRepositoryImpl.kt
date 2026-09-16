@@ -23,6 +23,7 @@ import com.vmcsoft.aerodns.domain.model.resolveSelectedProtocol
 import com.vmcsoft.aerodns.domain.repository.NetworkCapabilitiesRepository
 import com.vmcsoft.aerodns.domain.repository.SettingsRepository
 import com.vmcsoft.aerodns.domain.repository.VpnRepository
+import com.vmcsoft.aerodns.domain.repository.SpeedTestPause
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,6 +68,12 @@ class VpnRepositoryImpl internal constructor(
     private var lastConnectedConfig: DnsConnectionConfig? = null
     private var isReconnecting = false
     private val userOperation = AtomicLong()
+    private val restorationRevision = AtomicLong()
+    private data class PausedConnection(
+        val token: SpeedTestPause, val operation: Long, val revision: Long, val server: DnsServer,
+        val config: DnsConnectionConfig, val stopped: DnsVpnServiceEvent.Stopped
+    )
+    private var pausedConnection: PausedConnection? = null
 
     companion object {
         private const val TAG = "VpnRepositoryImpl"
@@ -91,6 +98,14 @@ class VpnRepositoryImpl internal constructor(
     }
 
     private fun handleServiceEvent(event: DnsVpnServiceEvent) {
+        pausedConnection?.let { pause ->
+            // A later service action (including a system/notification stop) supersedes
+            // the pause. The pause's own delayed stop delivery is harmless.
+            if (event !== pause.stopped) {
+                invalidateSpeedTestRestoration()
+                pausedConnection = null
+            }
+        }
         when (event) {
             is DnsVpnServiceEvent.Established -> {
                 // The command waiter and collector may both receive this event. Do not
@@ -209,34 +224,44 @@ class VpnRepositoryImpl internal constructor(
         // Serialize state mutations with service events, while keeping the caller's cancellation.
         withContext(repositoryScope.coroutineContext.minusKey(Job)) {
             operationMutex.withLock {
-                if (operation == userOperation.get()) connectInternal(server)
+                if (operation == userOperation.get()) connectInternal(server, isCurrent = { operation == userOperation.get() })
             }
         }
     }
 
-    private suspend fun connectInternal(server: DnsServer, restoredConfig: DnsConnectionConfig? = null) {
+    private suspend fun connectInternal(
+        server: DnsServer, restoredConfig: DnsConnectionConfig? = null,
+        restoreExactConfig: Boolean = false, isCurrent: () -> Boolean = { true }
+    ) {
         if (_connectionState.value is ConnectionState.Connected) {
             disconnectInternal(clearLastServer = true)
         }
 
+        if (!isCurrent()) return
         _connectionState.value = ConnectionState.Connecting
 
         try {
-            val stack = networkCapabilitiesRepository.getActiveNetworkIpStack()
-            val selectedProtocol = restoredConfig?.protocol
-                ?: server.resolveSelectedProtocol(settingsRepository.getSelectedDnsProtocol())
-            val enablePacketLoop = restoredConfig?.enableExperimentalPacketLoop
-                ?: (settingsRepository.isExperimentalPacketLoopEnabled() || selectedProtocol.requiresPacketLoop())
-            val dnsConfig = buildDnsConnectionConfig(server, stack, selectedProtocol).getOrElse { error ->
-                Log.e(TAG, "Invalid DNS config for ${server.name} on network $stack", error)
-                _connectionState.value = ConnectionState.Error(
-                    error.message ?: "No compatible DNS addresses for current network"
+            val dnsConfig = if (restoredConfig != null && restoreExactConfig) {
+                restoredConfig.copy(connectionRequestId = buildConnectionRequestId(server))
+            } else {
+                val stack = networkCapabilitiesRepository.getActiveNetworkIpStack()
+                val selectedProtocol = restoredConfig?.protocol
+                    ?: server.resolveSelectedProtocol(settingsRepository.getSelectedDnsProtocol())
+                val enablePacketLoop = restoredConfig?.enableExperimentalPacketLoop
+                    ?: (settingsRepository.isExperimentalPacketLoopEnabled() || selectedProtocol.requiresPacketLoop())
+                buildDnsConnectionConfig(server, stack, selectedProtocol).getOrElse { error ->
+                    Log.e(TAG, "Invalid DNS config for ${server.name} on network $stack", error)
+                    _connectionState.value = ConnectionState.Error(
+                        error.message ?: "No compatible DNS addresses for current network"
+                    )
+                    return
+                }.copy(
+                    connectionRequestId = buildConnectionRequestId(server),
+                    enableExperimentalPacketLoop = enablePacketLoop
                 )
-                return
-            }.copy(
-                connectionRequestId = buildConnectionRequestId(server),
-                enableExperimentalPacketLoop = enablePacketLoop
-            )
+            }
+            // Preferences/network reads can suspend while a newer choice is made.
+            if (!isCurrent()) return
             lastConnectedConfig = dnsConfig
             lastConnectedServer = server
 
@@ -310,6 +335,45 @@ class VpnRepositoryImpl internal constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to disconnect", e)
             _connectionState.value = ConnectionState.Error(e.message ?: "Failed to disconnect")
+        }
+    }
+
+    override fun invalidateSpeedTestRestoration() {
+        restorationRevision.incrementAndGet()
+    }
+
+    override suspend fun pauseForSpeedTest(): SpeedTestPause? {
+        val operation = userOperation.incrementAndGet()
+        val revision = restorationRevision.get()
+        return withContext(repositoryScope.coroutineContext.minusKey(Job)) {
+            operationMutex.withLock {
+                if (operation != userOperation.get() || revision != restorationRevision.get()) return@withLock null
+                val connected = _connectionState.value as? ConnectionState.Connected ?: return@withLock null
+                val config = connected.activeConfig ?: return@withLock null
+                disconnectInternal(clearLastServer = true)
+                val stopped = DnsVpnServiceEvents.events.replayCache.lastOrNull() as? DnsVpnServiceEvent.Stopped
+                if (operation != userOperation.get() || revision != restorationRevision.get()) return@withLock null
+                check(_connectionState.value == ConnectionState.Disconnected && stopped?.config == config) {
+                    "VPN did not stop for the speed test"
+                }
+                SpeedTestPause().also { token ->
+                    pausedConnection = PausedConnection(token, operation, revision, connected.server, config, requireNotNull(stopped))
+                }
+            }
+        }
+    }
+
+    override suspend fun restoreAfterSpeedTest(pause: SpeedTestPause) {
+        withContext(repositoryScope.coroutineContext.minusKey(Job)) {
+            operationMutex.withLock {
+                val saved = pausedConnection?.takeIf { it.token === pause } ?: return@withLock
+                pausedConnection = null // Consume once, including invalidated/failed attempts.
+                if (saved.operation != userOperation.get() || saved.revision != restorationRevision.get() ||
+                    _connectionState.value != ConnectionState.Disconnected ||
+                    DnsVpnServiceEvents.events.replayCache.lastOrNull() !== saved.stopped) return@withLock
+                connectInternal(saved.server, saved.config, restoreExactConfig = true,
+                    isCurrent = { saved.operation == userOperation.get() && saved.revision == restorationRevision.get() })
+            }
         }
     }
 

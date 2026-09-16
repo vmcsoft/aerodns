@@ -84,6 +84,7 @@ class DnsTileService : TileService() {
     override fun onClick() {
         super.onClick()
         Log.d(TAG, "Tile clicked")
+        vpnRepository.invalidateSpeedTestRestoration()
 
         serviceScope.launch {
             try {

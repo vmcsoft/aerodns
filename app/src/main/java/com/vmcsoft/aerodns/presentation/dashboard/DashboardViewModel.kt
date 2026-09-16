@@ -19,6 +19,9 @@ import com.vmcsoft.aerodns.presentation.components.SpeedTestState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,6 +82,9 @@ class DashboardViewModel @Inject constructor(
     val experimentalPacketLoopEnabled: StateFlow<Boolean> = _experimentalPacketLoopEnabled.asStateFlow()
 
     private var speedTestJob: Job? = null
+    private var speedTestGeneration = 0L
+    private var speedTestPause: com.vmcsoft.aerodns.domain.repository.SpeedTestPause? = null
+    private var speedTestPaused = false
 
     init {
         loadDnsServers()
@@ -113,6 +119,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onToggleExperimentalPacketLoop() {
+        vpnRepository.invalidateSpeedTestRestoration()
         viewModelScope.launch {
             val enabled = !_experimentalPacketLoopEnabled.value
             preferencesDataStore.setExperimentalPacketLoopEnabled(enabled)
@@ -157,6 +164,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onConnectToggle() {
+        vpnRepository.invalidateSpeedTestRestoration()
         viewModelScope.launch {
             when (connectionState.value) {
                 is ConnectionState.Connected, is ConnectionState.Connecting -> {
@@ -175,6 +183,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onDnsServerSelected(server: DnsServer) {
+        vpnRepository.invalidateSpeedTestRestoration()
         _selectedServer.value = server
         val resolvedProtocol = resolveProtocolForServer(server)
         _selectedProtocol.value = resolvedProtocol
@@ -194,6 +203,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onSelectAndConnectDns(server: DnsServer) {
+        vpnRepository.invalidateSpeedTestRestoration()
         _selectedServer.value = server
         val resolvedProtocol = resolveProtocolForServer(server)
         _selectedProtocol.value = resolvedProtocol
@@ -231,6 +241,7 @@ class DashboardViewModel @Inject constructor(
             return
         }
 
+        vpnRepository.invalidateSpeedTestRestoration()
         _selectedProtocol.value = resolvedProtocol
         viewModelScope.launch {
             preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
@@ -255,7 +266,6 @@ class DashboardViewModel @Inject constructor(
     fun onDismissSpeedTest() {
         _showSpeedTestDialog.value = false
         speedTestJob?.cancel()
-        speedTestJob = null
         _speedTestState.value = SpeedTestState.Idle
     }
 
@@ -278,6 +288,7 @@ class DashboardViewModel @Inject constructor(
         customBootstrapIp: String?,
         allowUntrustedCertificates: Boolean
     ) {
+        vpnRepository.invalidateSpeedTestRestoration()
         viewModelScope.launch {
             val serverToEdit = _serverToEdit.value
             val result = if (serverToEdit != null) {
@@ -338,6 +349,7 @@ class DashboardViewModel @Inject constructor(
         customBootstrapIp: String?,
         allowUntrustedCertificates: Boolean
     ) {
+        vpnRepository.invalidateSpeedTestRestoration()
         viewModelScope.launch {
             val serverToEdit = _serverToEdit.value
             val result = if (serverToEdit != null) {
@@ -409,6 +421,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onConfirmDeleteCustomDns() {
+        vpnRepository.invalidateSpeedTestRestoration()
         val server = _serverToDelete.value ?: return
         viewModelScope.launch {
             val result = deleteCustomDnsUseCase(server.id)
@@ -443,55 +456,58 @@ class DashboardViewModel @Inject constructor(
     }
 
     private fun runSpeedTest() {
-        speedTestJob?.cancel()
-        speedTestJob = viewModelScope.launch {
-            var wasConnected = false
-            var previousServer: DnsServer? = null
-
+        val generation = ++speedTestGeneration
+        val previous = speedTestJob
+        previous?.cancel()
+        // Enter try/finally even if dismissed immediately, before the dispatcher runs.
+        speedTestJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val owner = currentCoroutineContext()[Job]!!
             try {
-                // Save current VPN state
-                val currentState = connectionState.value
-                wasConnected = currentState is ConnectionState.Connected
-                if (wasConnected) {
-                    previousServer = (currentState as ConnectionState.Connected).server
-                    Log.d(TAG, "Disconnecting VPN for speed test...")
-                    // Disconnect VPN for accurate speed test
-                    vpnRepository.disconnect()
-                    delay(500) // Wait for disconnection to complete
-                }
-
-                val completedResults = mutableListOf<SpeedTestResult>()
-
-                val results = runSpeedTestUseCase { completed, total, result ->
-                    completedResults.add(result)
-                    _speedTestState.value = SpeedTestState.Running(
-                        completed = completed,
-                        total = total,
-                        results = completedResults.sortedBy { it.averageLatencyMs }
-                    )
-                }
-
-                _speedTestState.value = SpeedTestState.Completed(results)
-            } catch (e: CancellationException) {
-                Log.d(TAG, "Speed test cancelled")
-            } catch (e: Exception) {
-                Log.e(TAG, "Speed test failed", e)
-                _speedTestState.value = SpeedTestState.Error(e.message ?: "Unknown error")
-            } finally {
-                // Restore VPN connection if it was previously connected
-                if (wasConnected && previousServer != null) {
+                previous?.join()
+                currentCoroutineContext().ensureActive()
+                if (!speedTestPaused) {
+                    // Pair a completed pause with cleanup even if the screen disappears
+                    // while the service is acknowledging its stop.
                     withContext(NonCancellable) {
+                        speedTestPause = vpnRepository.pauseForSpeedTest()
+                        speedTestPaused = true
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                val completedResults = mutableListOf<SpeedTestResult>()
+                val results = runSpeedTestUseCase { completed, total, result ->
+                    if (owner.isActive && generation == speedTestGeneration && _showSpeedTestDialog.value) {
+                        completedResults.add(result)
+                        _speedTestState.value = SpeedTestState.Running(completed, total,
+                            completedResults.sortedBy { it.averageLatencyMs })
+                    }
+                }
+                if (owner.isActive && generation == speedTestGeneration && _showSpeedTestDialog.value) {
+                    _speedTestState.value = SpeedTestState.Completed(results)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (owner.isActive && generation == speedTestGeneration && _showSpeedTestDialog.value) {
+                    _speedTestState.value = SpeedTestState.Error(e.message ?: "Unknown error")
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    previous?.join()
+                    // A retest inherits the pause; only the latest run may restore it.
+                    if (generation == speedTestGeneration) {
+                        val pause = speedTestPause
+                        speedTestPause = null
+                        speedTestPaused = false
                         try {
-                            Log.d(TAG, "Restoring VPN connection to ${previousServer.name}...")
-                            delay(500)
-                            vpnRepository.connect(previousServer)
+                            if (pause != null) vpnRepository.restoreAfterSpeedTest(pause)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Failed to restore VPN connection", e)
-                            _errorMessage.value = "Failed to restore VPN connection: ${e.message}"
+                            if (generation == speedTestGeneration) {
+                                _errorMessage.value = "Failed to restore VPN connection: ${e.message}"
+                            }
                         }
                     }
                 }
-                speedTestJob = null
             }
         }
     }

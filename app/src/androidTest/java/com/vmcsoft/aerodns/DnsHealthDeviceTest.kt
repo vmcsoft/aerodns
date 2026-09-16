@@ -24,6 +24,7 @@ import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
+import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.domain.model.DnsHealth
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.statusDescription
@@ -98,6 +99,58 @@ class DnsHealthDeviceTest {
         delay(5_500)
         assertSame(terminal, DnsVpnServiceEvents.events.replayCache.last())
         assertFalse(hasVpn())
+    }
+
+    @Test @SdkSuppress(minSdkVersion = 28)
+    fun speedTestPauseRestoresActualConfigurationOnlyOnce() = runBlocking {
+        val repository = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
+        delay(1000)
+        val config = fixture("health-ok")
+        connect(config)
+        withTimeout(8000) { repository.connectionState.first { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy } }
+        val token = requireNotNull(repository.pauseForSpeedTest())
+        repository.restoreAfterSpeedTest(token)
+        val restored = withTimeout(8000) { repository.connectionState.first {
+            it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy
+        } } as ConnectionState.Connected
+        assertEquals(config.copy(connectionRequestId = ""), restored.activeConfig!!.copy(connectionRequestId = ""))
+        assertNotEquals(config.connectionRequestId, requireNotNull(restored.activeConfig).connectionRequestId)
+        repository.restoreAfterSpeedTest(token)
+        delay(300)
+        assertEquals(restored.activeConfig, (repository.connectionState.value as ConnectionState.Connected).activeConfig)
+    }
+
+    @Test @SdkSuppress(minSdkVersion = 28)
+    fun newerRepositoryConnectionWinsOverSpeedTestCleanup() = runBlocking {
+        val repository = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
+        delay(1000)
+        connect(fixture("health-ok"))
+        withTimeout(8000) { repository.connectionState.first { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy } }
+        val token = requireNotNull(repository.pauseForSpeedTest())
+        val replacement = fixture("health-ok")
+        val server = DnsServer("speed-choice", "Speed test choice", "", dohUrl = replacement.dohUrl,
+            customBootstrapIp = "127.0.0.1", allowUntrustedCertificates = true,
+            supportedProtocols = listOf(DnsProtocol.DOH), isCustom = true)
+        repository.connect(server)
+        val chosen = withTimeout(8000) { repository.connectionState.first {
+            it is ConnectionState.Connected && it.server.id == server.id && it.dnsHealth is DnsHealth.Healthy
+        } } as ConnectionState.Connected
+        repository.restoreAfterSpeedTest(token)
+        delay(300)
+        assertEquals(chosen.activeConfig, (repository.connectionState.value as ConnectionState.Connected).activeConfig)
+    }
+
+    @Test @SdkSuppress(minSdkVersion = 28)
+    fun explicitDisconnectDuringSpeedTestPauseRemainsDisconnected() = runBlocking {
+        val repository = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
+        delay(1000)
+        connect(fixture("health-ok"))
+        withTimeout(8000) { repository.connectionState.first { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy } }
+        val token = requireNotNull(repository.pauseForSpeedTest())
+        repository.disconnect()
+        repository.restoreAfterSpeedTest(token)
+        withTimeout(5000) { while (hasVpn()) delay(50) }
+        assertEquals(ConnectionState.Disconnected, repository.connectionState.value)
     }
 
     @Test fun fastQueryFinishesWhileAnEarlierQueryIsStillWaitingThroughTun() = runBlocking {
