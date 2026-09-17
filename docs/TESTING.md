@@ -134,6 +134,47 @@ English UI labels and validates the report from `dumpsys vpn_management`; check 
 contracts before applying it to another image. It is not signed-upgrade, long-idle,
 manufacturer-specific, or autonomous recovery testing. Keep JSON/logs outside Git.
 
+## In-place settings persistence
+
+`UpgradePersistenceDeviceTest` seeds preferences through the v1.5.2 repository APIs,
+then verifies them on the candidate after an actual Android package replacement.
+Use the host driver on an **owned disposable API 33+ emulator** with no active VPN
+or Always-on setting. It clears only the isolated `.validation` package between
+scenarios; there is no uninstall or data clear between baseline and candidate.
+
+Build the source baseline in a separate temporary worktree using the same `.validation`
+init script described above. Build the candidate and current test APK. Keep JDK tools
+available to `apksigner`; supply the Android build-tools directory explicitly:
+
+```bash
+python3 app/src/androidTest/fixtures/upgrade_persistence_check.py \
+  --serial emulator-5556 --build-tools "$ANDROID_HOME/build-tools/36.1.0" \
+  --baseline /tmp/aerodns-baseline.apk \
+  --candidate app/build/outputs/apk/debug/app-debug.apk \
+  --test-apk app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+  --allow-reset-validation-data --output /tmp/aerodns-upgrade.json
+```
+
+Preflight checks package identities, APK signatures, matching certificates, different
+app binaries and a nondecreasing versionCode. The same test APK seeds the baseline
+and verifies the candidate. Three scenarios cover Standard selection, custom DoH
+selection and older JSON records with absent bootstrap/certificate fields. Each keeps
+four profiles: dual-stack/mixed-protocol, URL-only strict, custom certificate opt-in,
+and IPv4-only Standard. Assertions cover all persisted profile fields, Unicode/long
+names, encoded URLs, selected protocol, last-connected ID and both values of the
+legacy packet-loop preference. Missing certificate opt-in defaults to false.
+
+The driver requires unchanged preference-file bytes through replacement and dashboard
+startup, plus a stable package UID. It then edits a profile through the repository,
+force-stops the app and verifies that edit and all other profiles after reopening the
+dashboard. Each phase is a separate instrumentation invocation; JSON and phase logs
+stay outside Git. An initially active VPN is not part of this scenario.
+
+This is local debug-signature/schema compatibility. Same-version replacement does not
+test a version-code migration, Play delivery, release shrinking, platform upgrade,
+backup/restore or manufacturer firmware. Verify the actual Play signing certificate
+and a Play-signed candidate separately before claiming production upgrade compatibility.
+
 ## Controlled load and idle recovery
 
 Use a disposable API 26+ emulator with the isolated `.validation` app and test APKs,
