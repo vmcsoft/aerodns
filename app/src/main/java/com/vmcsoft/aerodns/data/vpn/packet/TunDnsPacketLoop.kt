@@ -36,7 +36,7 @@ class TunDnsPacketLoop @Inject constructor(
     ) = withContext(Dispatchers.IO) {
         // Cancelling a blocked reader must not close the service-owned descriptor:
         // it remains alive until establish() finishes a replacement handover.
-        ParcelFileDescriptor.AutoCloseInputStream(vpnInterface.dup()).use { input ->
+        CancellableTunInputStream(vpnInterface).use { input ->
             run(input, FileOutputStream(vpnInterface.fileDescriptor), config, mtu, timeoutMs)
         }
     }

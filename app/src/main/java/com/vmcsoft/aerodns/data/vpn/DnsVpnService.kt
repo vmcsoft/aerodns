@@ -72,7 +72,6 @@ class DnsVpnService : VpnService() {
     private var currentDnsConfig: DnsConnectionConfig? = null
     private var isForegroundStarted = false
     private var controlPolicy = VpnControlPolicy()
-    private val legacyPolicy by lazy { getSharedPreferences("vpn_control", MODE_PRIVATE) }
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
     private val notificationUpdates by lazy { VpnNotificationUpdater(
         CoroutineScope(serviceScope.coroutineContext + Dispatchers.Main.immediate),
@@ -94,7 +93,6 @@ class DnsVpnService : VpnService() {
 
         const val ACTION_CONNECT = "com.vmcsoft.aerodns.ACTION_CONNECT"
         const val ACTION_DISCONNECT = "com.vmcsoft.aerodns.ACTION_DISCONNECT"
-        const val EXTRA_APP_START = "extra_app_start"
         const val EXTRA_PRESERVE_RECOVERY = "extra_preserve_recovery"
         const val EXTRA_DISCONNECT_REQUEST_ID = "extra_disconnect_request_id"
         const val EXTRA_DNS_CONFIG = "extra_dns_config"
@@ -114,7 +112,7 @@ class DnsVpnService : VpnService() {
         // malformed and disconnect commands. Promote before parsing or persistence.
         try {
             if (!isForegroundStarted) promoteForegroundConnecting(currentDnsConfig?.displayName)
-            refreshControlPolicy(intent)
+            refreshControlPolicy()
             when (intent?.action) {
                 ACTION_CONNECT -> {
                     val config = intent.serializableExtra<DnsConnectionConfig>(EXTRA_DNS_CONFIG)
@@ -124,7 +122,7 @@ class DnsVpnService : VpnService() {
                 }
                 ACTION_DISCONNECT -> {
                     val requestId = intent.getStringExtra(EXTRA_DISCONNECT_REQUEST_ID)
-                    if (isRunning && controlPolicy.alwaysOn && requestId == null) {
+                    if (isRunning && controlPolicy.systemManaged && requestId == null) {
                         currentDnsConfig?.let { config ->
                             updateForegroundNotification(config)
                             DnsVpnServiceEvents.emit(DnsVpnServiceEvent.Established(config, currentHealth, controlPolicy))
@@ -280,16 +278,11 @@ class DnsVpnService : VpnService() {
         )
     }
 
-    private fun refreshControlPolicy(intent: Intent? = null) {
+    private fun refreshControlPolicy() {
         controlPolicy = if (Build.VERSION.SDK_INT >= 29) {
             VpnControlPolicy(isAlwaysOn, isLockdownEnabled)
-        } else {
-            // Before API 29 follow Android's documented system-start marker approach.
-            // App-owned restoration is explicitly marked by the recovery companion.
-            if (intent?.action == SERVICE_INTERFACE && !intent.getBooleanExtra(EXTRA_APP_START, false)) {
-                legacyPolicy.edit().putBoolean("always_on", true).apply()
-            }
-            VpnControlPolicy(alwaysOn = legacyPolicy.getBoolean("always_on", false))
+        } else readLegacyVpnControlPolicy(packageName) { key ->
+            Settings.Secure.getString(contentResolver, key)
         }
     }
 
@@ -468,7 +461,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun createNotification(dnsConfig: DnsConnectionConfig): Notification {
-        val actionIntent = if (controlPolicy.alwaysOn) {
+        val actionIntent = if (controlPolicy.systemManaged) {
             PendingIntent.getActivity(this, 1, Intent(Settings.ACTION_VPN_SETTINGS), PendingIntent.FLAG_IMMUTABLE)
         } else {
             PendingIntent.getService(this, 0, Intent(this, DnsVpnService::class.java).setAction(ACTION_DISCONNECT), PendingIntent.FLAG_IMMUTABLE)
@@ -487,7 +480,7 @@ class DnsVpnService : VpnService() {
             .addAction(
                 Notification.Action.Builder(
                     null,
-                    if (controlPolicy.alwaysOn) "VPN settings" else "Disconnect",
+                    if (controlPolicy.systemManaged) "VPN settings" else "Disconnect",
                     actionIntent
                 ).build()
             )
@@ -505,7 +498,6 @@ class DnsVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        legacyPolicy.edit().clear().apply()
         // Android may invoke onRevoke off the main thread; serialize with start commands.
         if (Looper.myLooper() == Looper.getMainLooper()) stopVpn()
         else Handler(Looper.getMainLooper()).post { stopVpn() }

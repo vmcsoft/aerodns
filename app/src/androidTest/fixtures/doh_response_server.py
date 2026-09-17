@@ -25,7 +25,7 @@ def dns_reply(query, size):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     health_counts = {}
-    slow_inflight = 0
+    slow_inflight = {}
     health_lock = threading.Lock()
 
     def do_POST(self):
@@ -39,21 +39,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = dns_reply(query, {"large": 65507, "overflow": 65535, "medium": 4096}.get(name, 128))
         if name == "slow":
             with self.health_lock:
-                Handler.slow_inflight += 1
+                Handler.slow_inflight[self.path] = Handler.slow_inflight.get(self.path, 0) + 1
             try:
                 time.sleep(4)
             finally:
                 with self.health_lock:
-                    Handler.slow_inflight -= 1
+                    Handler.slow_inflight[self.path] -= 1
         if name == "example":
             if self.path.startswith("/health-slow"):
                 with self.health_lock:
-                    Handler.slow_inflight += 1
+                    Handler.slow_inflight[self.path] = Handler.slow_inflight.get(self.path, 0) + 1
                 try:
                     time.sleep(2)
                 finally:
                     with self.health_lock:
-                        Handler.slow_inflight -= 1
+                        Handler.slow_inflight[self.path] -= 1
             with self.health_lock:
                 count = self.health_counts.get(self.path, 0) + 1
                 self.health_counts[self.path] = count
@@ -70,7 +70,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     struct.pack("!HHHIH4B", 0xC00C, 1, 1, 0, 4, 0, 0, 0, count))
         if name == "inflight":
             with self.health_lock:
-                count = min(255, Handler.slow_inflight)
+                count = min(255, Handler.slow_inflight.get(self.path, 0))
             body = (query[:2] + struct.pack("!5H", 0x8180, 1, 1, 0, 0) + query[12:] +
                     struct.pack("!HHHIH4B", 0xC00C, 1, 1, 0, 4, 0, 0, 0, count))
         if name == "short":

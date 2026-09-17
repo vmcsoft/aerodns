@@ -30,6 +30,11 @@ DoH needs explicit packet forwarding:
 5. Protected sockets keep upstream HTTPS traffic outside the VPN.
 6. The DNS response is encoded into an IPv4 UDP packet and returned through TUN.
 
+The reader polls a duplicated TUN descriptor and a cancellation pipe. Closing the pipe
+writer wakes an idle read; the reader then releases its descriptors. This avoids a
+blocked read retaining the VPN on older Android while keeping the service-owned
+interface alive until replacement establishment completes.
+
 This routing invariant prevents AeroDNS from becoming an accidental full-tunnel VPN.
 
 ## DNS transports
@@ -47,7 +52,19 @@ Custom DoH uses an explicit bootstrap IP when configured. Otherwise the endpoint
 
 `PreferencesDataStore` stores resolver selection, custom resolver profiles and protocol preference. Repositories expose state through Kotlin `Flow`; `DashboardViewModel` converts it into UI state.
 
-The VPN service owns the actual active configuration and sampled DNS health. Establishment displays “Checking DNS…”; only a valid response through the active DNS path produces “Connected”. Dashboard, notification and tile consume the same service state.
+The VPN service owns the actual active configuration and sampled DNS health. Establishment displays “Checking DNS…”; only a valid response through the active DNS path produces “Connected”. Dashboard, notification and tile consume the same service state. The health probe
+requires a VPN matching the interface address and advertised DNS set. DoH probes bind
+to that VPN's virtual resolver. Standard probes send directly to the exact advertised
+resolver using Android's normal UID routing: explicitly binding to a route-free VPN
+would prevent split-tunnel fallthrough on older Android. Neither probe is protected
+from the VPN, and neither uses another resolver or the system's hostname cache.
+
+When older Android reports the physical network as the default, the probe finds the
+sole matching VPN from available networks. Ambiguous matches and send failures during
+route installation retry within the existing five-second budget. UDP packets carry
+the same explicit destination as their connected socket for older Android compatibility.
+This verifies sampled resolver reachability; controlled attribution of other apps'
+DNS queries remains separate acceptance work.
 
 A separate, versioned `VpnRecoveryStore` durably records the intended active configuration in SharedPreferences. Sticky/system starts restore it with a new request identity. Accepted disconnects, revocation and startup/forwarding failure clear it; the next selected profile does not overwrite it.
 
@@ -58,12 +75,15 @@ The companion uses normal Android service scheduling. Process recovery is best e
 ## Always-on controls and notifications
 
 The service includes a `VpnControlPolicy` in each established snapshot. Android 10+
-uses `VpnService.isAlwaysOn` and `isLockdownEnabled`. Earlier versions infer Always-on
-from an unmarked system start and retain that flag until revocation; app-owned recovery
-is marked explicitly. This older-platform inference needs separate acceptance, especially
-when settings change while the process is dead. It cannot detect lockdown directly.
+uses `VpnService.isAlwaysOn` and `isLockdownEnabled`. Android 7–9 read current per-user
+`always_on_vpn_app` and `always_on_vpn_lockdown` settings on each refresh. There is no
+persisted inference, so changes made while the process is absent are observed. These
+non-SDK setting names are confined to API 24–28. A rejected read or malformed lockdown
+value produces an unknown policy: preserve the connection, disable stop/speed tests and
+show “Check Android VPN settings”. A vendor silently omitting these keys cannot be
+distinguished from settings being off; affected OEMs still need acceptance checks.
 
-While Always-on is known to be selected, dashboard disconnect and speed tests are
+While Always-on is selected or policy cannot be read, dashboard disconnect and speed tests are
 disabled, and notification/tile actions open Android VPN settings. Resolver changes
 replace the active service configuration without an explicit stop first. The service
 rechecks policy before accepting an untargeted disconnect, so stale controls cannot
@@ -72,8 +92,8 @@ revocation still retire the affected connection. Repository disconnects require 
 stop acknowledgement; a refused stop must not produce a false Disconnected state.
 
 “Block connections without VPN” blocks ordinary traffic because AeroDNS routes only
-DNS. On Android 10+, the dashboard, tile and notification report “Android is blocking
-traffic” even if DNS health succeeds. Turn off this option to allow ordinary traffic.
+DNS. When lockdown is detected, the dashboard, tile and notification report
+“Android is blocking traffic” even if DNS health succeeds. Turn off this option to allow ordinary traffic.
 Policy is refreshed on service commands and health results; a settings change may take
 until the next health result to appear in the dashboard.
 

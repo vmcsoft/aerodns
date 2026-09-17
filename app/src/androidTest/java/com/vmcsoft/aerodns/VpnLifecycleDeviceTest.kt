@@ -264,7 +264,6 @@ class VpnLifecycleDeviceTest {
         val previous = DnsVpnServiceEvents.events.replayCache.lastOrNull()
         val intent = Intent(context, DnsVpnService::class.java).apply {
             this.action = action
-            putExtra(DnsVpnService.EXTRA_APP_START, true)
             if (config != null) putExtra(DnsVpnService.EXTRA_DNS_CONFIG, config)
             if (preserveRecovery) putExtra(DnsVpnService.EXTRA_PRESERVE_RECOVERY, true)
         }
@@ -304,7 +303,10 @@ class VpnLifecycleDeviceTest {
     private fun awaitDns(address: String) {
         val deadline = System.nanoTime() + 5_000_000_000L
         while (System.nanoTime() < deadline) {
-            val network = connectivity.activeNetwork
+            // Older Android may report the physical default for a DNS-only VPN.
+            val network = connectivity.allNetworks.singleOrNull {
+                connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
             if (network != null && connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true &&
                 connectivity.getLinkProperties(network)?.dnsServers?.map { it.hostAddress } == listOf(address)) return
             Thread.sleep(50)

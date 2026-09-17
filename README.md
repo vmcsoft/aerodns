@@ -44,8 +44,9 @@ See [Architecture](docs/ARCHITECTURE.md) for the technical model and current pro
 When Android Always-on VPN is selected, turn it off in Android VPN settings before
 disconnecting or running a speed test. You can still choose another DNS resolver.
 Leave **Block connections without VPN** off: AeroDNS routes DNS only, so this Android
-option blocks ordinary app traffic. Android 10+ can report that setting directly;
-older Android behavior still needs broader device validation.
+option blocks ordinary app traffic. If AeroDNS cannot read the Android VPN settings,
+it directs you there to manage the connection. Android 7–9 compatibility uses system
+settings that may differ on manufacturer builds; broader device validation remains open.
 
 ## Build from source
 

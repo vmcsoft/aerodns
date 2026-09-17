@@ -7,6 +7,8 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.VpnService
+import android.os.Build
+import android.provider.Settings
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -31,7 +33,7 @@ import org.junit.runner.RunWith
 
 /** Run separately with actual Android Always-on enabled; optionally policyLockdown=true. */
 @RunWith(AndroidJUnit4::class)
-@SdkSuppress(minSdkVersion = 29)
+@SdkSuppress(minSdkVersion = 28)
 class AlwaysOnPolicyDeviceTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -61,8 +63,13 @@ class AlwaysOnPolicyDeviceTest {
             connectionRequestId = "policy-${System.nanoTime()}", enableExperimentalPacketLoop = true)
         connect(config)
         val service = requireNotNull(ValidationComponentFactory.vpn.get())
-        assertTrue("Enable Always-on in Android VPN settings first", service.isAlwaysOn)
-        assertEquals(lockdown, service.isLockdownEnabled)
+        if (Build.VERSION.SDK_INT >= 29) {
+            assertTrue("Enable Always-on in Android VPN settings first", service.isAlwaysOn)
+            assertEquals(lockdown, service.isLockdownEnabled)
+        } else {
+            assertEquals(context.packageName, Settings.Secure.getString(context.contentResolver, "always_on_vpn_app"))
+            assertEquals(lockdown, Settings.Secure.getInt(context.contentResolver, "always_on_vpn_lockdown", 0) != 0)
+        }
         val state = withTimeout(8000) { repository.connectionState.first {
             it is ConnectionState.Connected && it.activeConfig == config && it.dnsHealth is DnsHealth.Healthy
         } } as ConnectionState.Connected

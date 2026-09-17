@@ -41,7 +41,6 @@ class VpnRecoveryService : Service() {
         }
         return try {
             val restore = Intent(this, DnsVpnService::class.java).setAction(VpnService.SERVICE_INTERFACE)
-                .putExtra(DnsVpnService.EXTRA_APP_START, true)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(restore) else startService(restore)
             START_STICKY
         } catch (error: RuntimeException) {

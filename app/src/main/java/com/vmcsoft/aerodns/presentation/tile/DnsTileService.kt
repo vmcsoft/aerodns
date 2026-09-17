@@ -128,7 +128,7 @@ class DnsTileService : TileService() {
                         }
                     }
                     is ConnectionState.Connected -> {
-                        if (currentState.controlPolicy.alwaysOn) {
+                        if (currentState.controlPolicy.systemManaged) {
                             openAndCollapse(Intent(Settings.ACTION_VPN_SETTINGS))
                         } else {
                             Log.i(TAG, "Disconnecting from ${currentState.server.name}")
@@ -151,9 +151,9 @@ class DnsTileService : TileService() {
 
         when (state) {
             is ConnectionState.Connected -> {
-                tile.state = if (state.dnsHealth is DnsHealth.Healthy && !state.controlPolicy.lockdown) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+                tile.state = if (state.dnsHealth is DnsHealth.Healthy && !state.controlPolicy.lockdown && state.controlPolicy.isKnown) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
                 // Status remains visible on Android 7–9, where tiles have no subtitle.
-                tile.label = if (state.controlPolicy.alwaysOn) "Always-on DNS" else if (state.dnsHealth is DnsHealth.Healthy) getString(R.string.tile_label) else state.dnsHealth.statusText
+                tile.label = if (!state.controlPolicy.isKnown) "VPN settings" else if (state.controlPolicy.alwaysOn) "Always-on DNS" else if (state.dnsHealth is DnsHealth.Healthy) getString(R.string.tile_label) else state.dnsHealth.statusText
                 val description = state.activeConfig?.statusDescription(state.dnsHealth, state.controlPolicy) ?: state.dnsHealth.statusText
                 tile.contentDescription = description
                 QuickSettingsTileCompat.setSubtitle(tile, description)
@@ -209,6 +209,7 @@ class DnsTileService : TileService() {
     }
 
     private fun openAndCollapse(launchIntent: Intent) {
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startActivityAndCollapse(
                 PendingIntent.getActivity(

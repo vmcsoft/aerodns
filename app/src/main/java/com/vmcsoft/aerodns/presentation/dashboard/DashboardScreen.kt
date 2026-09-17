@@ -174,7 +174,7 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 ActionButtons(
-                    speedTestEnabled = (connectionState as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true,
+                    speedTestEnabled = (connectionState as? ConnectionState.Connected)?.controlPolicy?.systemManaged != true,
                     onShowSpeedTest = viewModel::onShowSpeedTest,
                     onShowDnsSelector = viewModel::onShowDnsSelector
                 )
@@ -292,7 +292,7 @@ private fun ConnectionPanel(
         connectionState is ConnectionState.Disconnecting
     val isConnected = connectionState is ConnectionState.Connected
     val connected = connectionState as? ConnectionState.Connected
-    val alwaysOn = connected?.controlPolicy?.alwaysOn == true
+    val systemManaged = connected?.controlPolicy?.systemManaged == true
     val context = LocalContext.current
 
     Column(
@@ -325,9 +325,11 @@ private fun ConnectionPanel(
         connected?.activeConfig?.let { config ->
             Text(text = config.displayName, color = TextGray, textAlign = TextAlign.Center)
         }
-        if (alwaysOn) {
+        if (systemManaged) {
             Text(
-                text = if (connected?.controlPolicy?.lockdown == true)
+                text = if (connected?.controlPolicy?.isKnown == false)
+                    "Android VPN settings could not be read. Open VPN settings to manage this connection."
+                else if (connected?.controlPolicy?.lockdown == true)
                     "AeroDNS changes DNS only. Turn off ‘Block connections without VPN’ in Android VPN settings to let other apps use the internet."
                 else "Always-on VPN is controlled by Android. Turn it off in VPN settings to disconnect or run a speed test.",
                 color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
@@ -336,7 +338,7 @@ private fun ConnectionPanel(
         }
         if (connected?.dnsHealth is DnsHealth.Unhealthy) {
             Text(
-                text = if (alwaysOn) "VPN is on. DNS checks will retry automatically. You can choose another resolver."
+                text = if (systemManaged) "VPN is on. DNS checks will retry automatically. You can choose another resolver."
                     else "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
                 color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
             )
@@ -345,7 +347,7 @@ private fun ConnectionPanel(
         ConnectButton(
             isConnected = isConnected,
             isBusy = isConnectingOrDisconnecting,
-            enabled = !alwaysOn,
+            enabled = !systemManaged,
             onClick = onConnectToggle
         )
 
@@ -759,7 +761,7 @@ private fun getStatusText(state: ConnectionState): String {
 @Composable
 private fun getStatusColor(state: ConnectionState): Color {
     return when (state) {
-        is ConnectionState.Connected -> if (state.controlPolicy.lockdown) StatusDisconnected else when (state.dnsHealth) {
+        is ConnectionState.Connected -> if (state.controlPolicy.lockdown || !state.controlPolicy.isKnown) StatusDisconnected else when (state.dnsHealth) {
             is DnsHealth.Healthy -> ActiveButtonCyan
             DnsHealth.Checking -> MaterialTheme.colorScheme.primary
             is DnsHealth.Unhealthy -> StatusDisconnected

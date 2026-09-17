@@ -20,7 +20,7 @@ import java.net.SocketTimeoutException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Sends wire DNS through the established VPN; never protect this probe socket from that VPN. */
+/** Checks the established DNS path; never protect this probe socket from the VPN. */
 internal class RuntimeDnsHealthProbe(context: Context) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
 
@@ -34,13 +34,14 @@ internal class RuntimeDnsHealthProbe(context: Context) {
                     delay(50)
                     continue
                 }
+                var routeNotReady = false
                 for ((index, address) in destinations.withIndex()) {
                     val remaining = remainingMillis(deadline)
                     if (remaining <= 0) break
                     val query = DnsWireMessage.buildAQuery(System.nanoTime().toInt(), "example.com")
                     val start = System.nanoTime()
                     try {
-                        val reply = exchange(vpn.network, address, query, maxOf(1, remaining / (destinations.size - index))) {
+                        val reply = exchange(vpn.network, config.enableExperimentalPacketLoop, address, query, maxOf(1, remaining / (destinations.size - index))) {
                             findVpn(destinations) == vpn
                         }
                         if (DnsHealthResponse.isHealthy(query, reply)) {
@@ -49,11 +50,15 @@ internal class RuntimeDnsHealthProbe(context: Context) {
                     } catch (e: CancellationException) { throw e }
                     catch (_: VpnNetworkNotReady) {
                         // Routing may lag establishment, or the active network may change
-                        // while a query is in flight. Reacquire within the original budget.
-                        delay(50)
-                        continue@readiness
+                        // while a query is in flight. Try other selected addresses first,
+                        // so an unreachable family cannot starve a working resolver IP.
+                        routeNotReady = true
                     }
                     catch (_: java.io.IOException) { /* Try only another address in the selected configuration. */ }
+                }
+                if (routeNotReady) {
+                    delay(50)
+                    continue@readiness
                 }
                 break
             }
@@ -65,19 +70,27 @@ internal class RuntimeDnsHealthProbe(context: Context) {
     private data class VpnRoute(val network: Network, val interfaceName: String?)
 
     private fun findVpn(destinations: List<String>): VpnRoute? {
-        val network = connectivity.activeNetwork ?: return null
-        val properties = connectivity.getLinkProperties(network) ?: return null
-        return VpnRoute(network, properties.interfaceName).takeIf {
-            connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true &&
-                properties.linkAddresses.any { it.address.hostAddress == "10.0.0.2" } &&
-                properties.dnsServers.map { it.hostAddress }.toSet() == destinations.map { InetAddress.getByName(it).hostAddress }.toSet()
+        val expectedDns = destinations.map { InetAddress.getByName(it).hostAddress }.toSet()
+        fun matchingRoute(network: Network): VpnRoute? {
+            val properties = connectivity.getLinkProperties(network) ?: return null
+            return VpnRoute(network, properties.interfaceName).takeIf {
+                connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true &&
+                    properties.linkAddresses.any { it.address.hostAddress == "10.0.0.2" } &&
+                    properties.dnsServers.map { it.hostAddress }.toSet() == expectedDns
+            }
         }
+        connectivity.activeNetwork?.let { matchingRoute(it)?.let { route -> return route } }
+        // Older Android can report the physical default for a DNS-only VPN.
+        // Use the sole matching VPN; during ambiguous handover,
+        // wait within the existing readiness budget instead of choosing an old one.
+        return connectivity.allNetworks.mapNotNull(::matchingRoute).singleOrNull()
     }
 
     private class VpnNetworkNotReady(cause: java.io.IOException? = null) : java.io.IOException(cause)
 
     private suspend fun exchange(
         network: Network,
+        bindToVpn: Boolean,
         address: String,
         query: ByteArray,
         timeoutMs: Int,
@@ -90,11 +103,28 @@ internal class RuntimeDnsHealthProbe(context: Context) {
             val socket = DatagramSocket()
             continuation.invokeOnCancellation { socket.close() }
             try {
-                try { network.bindSocket(socket) }
-                catch (e: java.io.IOException) { throw VpnNetworkNotReady(e) }
+                // Standard DNS has no TUN route. Follow Android's normal UID
+                // routing to the exact advertised resolver; explicitly binding to
+                // the VPN disables split-tunnel fallthrough on older Android.
+                // DoH must bind to its virtual resolver inside TUN.
+                if (bindToVpn) {
+                    try { network.bindSocket(socket) }
+                    catch (e: java.io.IOException) { throw VpnNetworkNotReady(e) }
+                }
                 if (!isCurrentNetwork()) throw VpnNetworkNotReady()
-                socket.connect(InetAddress.getByName(address), 53)
-                socket.send(DatagramPacket(query, query.size))
+                val destination = InetAddress.getByName(address)
+                try { socket.connect(destination, 53) }
+                catch (e: java.io.IOException) { throw VpnNetworkNotReady(e) }
+                // Older Android's native datagram path can require the packet's
+                // destination even on a connected socket. Keep both identities equal.
+                val request = DatagramPacket(query, query.size, destination, 53)
+                fun sendRequest() {
+                    try { socket.send(request) }
+                    // Network visibility can precede route installation on older
+                    // Android. Reacquire after failed sends within the same deadline.
+                    catch (e: java.io.IOException) { throw VpnNetworkNotReady(e) }
+                }
+                sendRequest()
                 val packet = DatagramPacket(ByteArray(4096), 4096)
                 while (true) {
                     if (!isCurrentNetwork()) throw VpnNetworkNotReady()
@@ -103,7 +133,7 @@ internal class RuntimeDnsHealthProbe(context: Context) {
                     if (!retried && System.nanoTime() >= retryAt) {
                         // UDP can be dropped while netd applies routes even when Android
                         // retains the same Network. Retry once; do not extend the deadline.
-                        socket.send(DatagramPacket(query, query.size))
+                        sendRequest()
                         retried = true
                     }
                     // A socket stays bound to its original network during VPN replacement.

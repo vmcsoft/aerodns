@@ -204,7 +204,7 @@ class VpnRepositoryImpl internal constructor(
 
                 // Disconnect and reconnect
                 Log.d(TAG, "Reconnecting to ${server.name}...")
-                if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true) {
+                if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged != true) {
                     if (!disconnectInternal(clearLastServer = false)) return
                     delay(RECONNECT_DELAY_MS)
                 }
@@ -235,9 +235,9 @@ class VpnRepositoryImpl internal constructor(
         server: DnsServer, restoredConfig: DnsConnectionConfig? = null,
         restoreExactConfig: Boolean = false, isCurrent: () -> Boolean = { true }
     ) {
-        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == false) {
+        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged == false) {
             if (!disconnectInternal(clearLastServer = true) &&
-                (_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn != true) return
+                (_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged != true) return
         }
 
         if (!isCurrent()) return
@@ -308,7 +308,7 @@ class VpnRepositoryImpl internal constructor(
     }
 
     override suspend fun disconnect() {
-        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) return
+        if ((_connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged == true) return
         val operation = userOperation.incrementAndGet()
         // Serialize state mutations with service events, while keeping the caller's cancellation.
         withContext(repositoryScope.coroutineContext.minusKey(Job)) {
@@ -362,7 +362,7 @@ class VpnRepositoryImpl internal constructor(
             operationMutex.withLock {
                 if (operation != userOperation.get() || revision != restorationRevision.get()) return@withLock null
                 val connected = _connectionState.value as? ConnectionState.Connected ?: return@withLock null
-                check(!connected.controlPolicy.alwaysOn) { "Turn off Always-on VPN in Android VPN settings before running a speed test." }
+                check(!connected.controlPolicy.systemManaged) { "Check Android VPN settings and turn off Always-on VPN before running a speed test." }
                 val config = connected.activeConfig ?: return@withLock null
                 check(disconnectInternal(clearLastServer = true)) { "VPN did not stop for the speed test" }
                 val stopped = DnsVpnServiceEvents.events.replayCache.lastOrNull() as? DnsVpnServiceEvent.Stopped

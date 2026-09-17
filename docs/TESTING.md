@@ -113,12 +113,23 @@ requires the latest healthy notification within twelve seconds. Teardown waits f
 VPN/notification removal and checks that delayed work does not repost it. Run with
 Always-on **off**, the HTTPS fixture running and `adb reverse tcp:18443 tcp:18443`.
 
-`AlwaysOnPolicyDeviceTest` must run separately on Android 10+ with the actual Android
+`AlwaysOnPolicyDeviceTest` must run separately on Android 9+ with the actual Android
 Always-on setting enabled for the validation package. It checks the public system
-policy, disabled dashboard controls, rejected stale disconnect and benchmark pause,
+policy on Android 10+ and current per-user settings on Android 9, disabled dashboard controls, rejected stale disconnect and benchmark pause,
 repository resolver replacement, notification action and a real SystemUI tile click.
 Run once with lockdown off and once with it on, passing `policyLockdown=true` for the
 latter. Use an owned emulator: lockdown deliberately interrupts ordinary networking.
+On API 28, add the tile from the host **before** launching instrumentation. Adding and
+immediately opening it inside the test can leave SystemUI's service binding without a
+tile object. Keep it added across both policy runs, then remove this test-owned tile:
+
+```bash
+adb -s emulator-5562 shell cmd statusbar add-tile \
+  com.vmcsoft.aerodns.validation/com.vmcsoft.aerodns.presentation.tile.DnsTileService
+# Run the policy checks, then clean up:
+# adb -s emulator-5562 shell cmd statusbar remove-tile \
+#   com.vmcsoft.aerodns.validation/com.vmcsoft.aerodns.presentation.tile.DnsTileService
+```
 
 ```bash
 adb -s emulator-5556 shell am instrument -w -e responseTestPort 18443 \
@@ -132,9 +143,46 @@ adb -s emulator-5556 shell am instrument -w -e responseTestPort 18443 \
 
 The policy test cleans up through the real service revocation callback, not the now
 forbidden disconnect command. Restore Always-on/lockdown settings after the run.
-The normal suite requires both settings off. Android 7–9 system-start inference,
-settings changes while the process is dead, OEM behavior and signed upgrades remain
-separate acceptance work. Do not count these Android 10+ checks as older-platform proof.
+The normal suite requires both settings off. OEM behavior and signed upgrades remain
+separate acceptance work. Do not count emulator policy checks as production-upgrade
+or host-observed process-recovery evidence.
+
+### Legacy Android policy changes and idle teardown
+
+Run `LegacyVpnPolicyDeviceTest` on API 24–28. Its setting reads use the ordinary app UID;
+no shell identity or extra permission is adopted. It verifies actual policy, notification
+action, disconnect refusal/acceptance and removal of the real VPN after fixture cleanup.
+Use the same HTTPS fixture on port 18443; this case uses emulator host alias `10.0.2.2`.
+
+Run these separate configurations using Android VPN settings:
+
+1. Always-on off: use the default false arguments below.
+2. Connect first, then enable Always-on while the VPN is already active:
+   pass `expectedAlwaysOn=true`.
+3. Enable lockdown too: pass both arguments true. Some Android 7 images do not expose
+   a lockdown switch; record the missing coverage instead of substituting a setting write.
+4. With Always-on selected, force-stop the validation package. Turn Always-on off while
+   the process remains absent, then run the test with both arguments false.
+
+```bash
+adb -s emulator-5558 shell am instrument -w \
+  -e expectedAlwaysOn false -e expectedLockdown false \
+  -e class com.vmcsoft.aerodns.LegacyVpnPolicyDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Then run `DnsHealthDeviceTest` and `VpnLifecycleDeviceTest` with both settings off.
+The health cases cover real UDP/DoH traffic, replacement, cancellation, an unavailable
+Standard resolver and a working selected address following an unreachable IPv6 address; API 28+
+adds debug-component observation. Inspect JUnit results for failures/skips, since the
+`am instrument` shell exit status alone does not establish a pass.
+
+Fixture readiness counters are scoped to endpoint paths, so concurrent isolated runs
+cannot satisfy each other's slow-request readiness. Validate the fixture separately:
+
+```bash
+python3 -m unittest discover -s app/src/androidTest/fixtures -p 'test_*.py'
+```
 
 ## Manual regression checklist
 

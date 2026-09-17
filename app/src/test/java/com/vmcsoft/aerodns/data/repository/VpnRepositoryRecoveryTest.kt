@@ -71,6 +71,19 @@ class VpnRepositoryRecoveryTest {
         io.mockk.verify { context wasNot io.mockk.Called }
     }
 
+    @Test fun `unreadable system policy cannot disconnect or start a benchmark pause`() = runTest {
+        val context = mockk<android.content.Context>()
+        val repository = VpnRepositoryImpl(context, networkMonitor, mockk(), mockk(), backgroundScope)
+        events.emit(DnsVpnServiceEvent.Established(config, controlPolicy = com.vmcsoft.aerodns.domain.model.VpnControlPolicy(isKnown = false)))
+        runCurrent()
+        val before = repository.connectionState.value
+        repository.disconnect()
+        try { repository.pauseForSpeedTest(); fail("Expected system policy protection") }
+        catch (expected: IllegalStateException) { assertTrue(expected.message.orEmpty().contains("VPN settings")) }
+        assertSame(before, repository.connectionState.value)
+        io.mockk.verify { context wasNot io.mockk.Called }
+    }
+
     @Test fun `repository created after service restoration reads actual saved settings`() = runTest {
         events.emit(DnsVpnServiceEvent.Established(config))
         val repository = VpnRepositoryImpl(mockk(), networkMonitor, mockk(), mockk(), backgroundScope)

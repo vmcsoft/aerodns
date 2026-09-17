@@ -62,6 +62,24 @@ class DnsHealthDeviceTest {
         assertTrue("Expected live Standard DNS answer: $health", health is DnsHealth.Healthy)
     }
 
+    @Test fun unavailableStandardResolverCannotBorrowHealthySystemDns() = runBlocking {
+        val config = DnsConnectionConfig("health-standard-unavailable", "Unavailable Standard", DnsProtocol.STANDARD,
+            listOf("192.0.2.53"), connectionRequestId = "health-${System.nanoTime()}")
+        connect(config)
+        val health = awaitHealth(config)
+        assertTrue("Only the selected resolver can establish health: $health", health is DnsHealth.Unhealthy)
+        assertTrue(hasVpn())
+        assertEquals(config, (DnsVpnServiceEvents.events.replayCache.last() as DnsVpnServiceEvent.Established).config)
+    }
+
+    @Test fun unreachableFirstAddressDoesNotStarveAnotherSelectedAddress() = runBlocking {
+        val config = DnsConnectionConfig("health-standard-addresses", "Selected addresses", DnsProtocol.STANDARD,
+            listOf("2001:db8::53", "8.8.8.8"), connectionRequestId = "health-${System.nanoTime()}")
+        connect(config)
+        assertTrue(awaitHealth(config) is DnsHealth.Healthy)
+        assertEquals(config, (DnsVpnServiceEvents.events.replayCache.last() as DnsVpnServiceEvent.Established).config)
+    }
+
     @Test fun dohHealthFailureAndRecoveryKeepTheSameInterface() = runBlocking {
         val config = fixture("health-cycle")
         connect(config)
@@ -157,12 +175,15 @@ class DnsHealthDeviceTest {
         val config = fixture("health-ok")
         connect(config)
         assertTrue(awaitHealth(config) is DnsHealth.Healthy)
-        val network = requireNotNull(connectivity.activeNetwork)
+        val network = connectivity.allNetworks.single {
+            connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        }
         DatagramSocket().use { socket ->
             network.bindSocket(socket)
-            socket.connect(InetAddress.getByName("10.0.0.1"), 53)
+            val destination = InetAddress.getByName("10.0.0.1")
+            socket.connect(destination, 53)
             val slow = DnsWireMessage.buildAQuery(101, "slow.fixture.test")
-            socket.send(DatagramPacket(slow, slow.size))
+            socket.send(DatagramPacket(slow, slow.size, destination, 53))
             val transport = DohDnsTransport(DohEndpointResolver(context))
             withTimeout(2000) {
                 while (true) {
@@ -174,7 +195,7 @@ class DnsHealthDeviceTest {
             }
             val fast = DnsWireMessage.buildAQuery(102, "fast.fixture.test")
             val start = System.nanoTime()
-            socket.send(DatagramPacket(fast, fast.size))
+            socket.send(DatagramPacket(fast, fast.size, destination, 53))
             socket.soTimeout = 2000 // Slow fixture takes four seconds.
             val reply = DatagramPacket(ByteArray(4096), 4096)
             socket.receive(reply)

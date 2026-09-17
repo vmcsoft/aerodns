@@ -52,6 +52,19 @@ class DashboardSpeedTestTest {
         assertTrue(vm.errorMessage.value.orEmpty().contains("Always-on"))
     }
 
+    @Test fun `unknown policy keeps stop and measurement behind Android settings`() = runTest {
+        runCurrent()
+        val before = (repository.connectionState.value as ConnectionState.Connected)
+            .copy(controlPolicy = VpnControlPolicy(isKnown = false))
+        repository.connectionState.value = before
+        runCurrent()
+        vm.onConnectToggle(); vm.onShowSpeedTest(); runCurrent()
+        assertTrue(repository.calls.isEmpty())
+        assertFalse(vm.showSpeedTestDialog.value)
+        assertSame(before, repository.connectionState.value)
+        assertTrue(vm.errorMessage.value.orEmpty().contains("VPN settings"))
+    }
+
     @Test fun `always-on resolver selection delegates one connect without explicit stop`() = runTest {
         runCurrent()
         repository.connectionState.value = (repository.connectionState.value as ConnectionState.Connected)

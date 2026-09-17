@@ -165,8 +165,8 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onConnectToggle() {
-        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) {
-            _errorMessage.value = "Android controls this connection. Use VPN settings to turn off Always-on VPN."
+        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged == true) {
+            _errorMessage.value = "Manage this connection in Android VPN settings. Turn off Always-on VPN before disconnecting."
             return
         }
         vpnRepository.invalidateSpeedTestRestoration()
@@ -256,8 +256,8 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun onShowSpeedTest() {
-        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.alwaysOn == true) {
-            _errorMessage.value = "Turn off Always-on VPN in Android VPN settings before running a speed test."
+        if ((connectionState.value as? ConnectionState.Connected)?.controlPolicy?.systemManaged == true) {
+            _errorMessage.value = "Check Android VPN settings and turn off Always-on VPN before running a speed test."
             return
         }
         _showSpeedTestDialog.value = true
@@ -424,7 +424,7 @@ class DashboardViewModel @Inject constructor(
         vpnRepository.invalidateSpeedTestRestoration()
         val server = _serverToDelete.value ?: return
         val active = connectionState.value as? ConnectionState.Connected
-        if (active?.controlPolicy?.alwaysOn == true && active.activeConfig?.serverId == server.id) {
+        if (active?.controlPolicy?.systemManaged == true && active.activeConfig?.serverId == server.id) {
             _errorMessage.value = "Choose another resolver before deleting the active Always-on DNS profile."
             _serverToDelete.value = null
             return
