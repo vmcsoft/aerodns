@@ -2,6 +2,16 @@
 
 Notable changes to AeroDNS are recorded here.
 
+## 1.5.3 — Unreleased
+
+- Improve VPN startup, recovery and connection-state reporting.
+- Resolve custom DoH endpoints through the underlying network and reuse connections
+  while keeping certificate policies separate.
+- Keep the selected resolver's routing and DNS protocol consistent across connection
+  and speed testing; preserve newer user choices when a test finishes.
+- Bound DoH forwarding work and response sizes, and recover after failed DNS checks.
+- Improve long-text layouts, VPN consent retry and Always-on VPN controls.
+
 ## [1.5.2] - 2026-07-23
 
 - Target Android 16 / API level 36.
