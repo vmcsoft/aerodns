@@ -78,6 +78,16 @@ readiness also checks physical networks, so a still-validated VPN cannot hide an
 This tracks physical membership, not the exact default underlay, same-network DNS/address
 changes, or uninterrupted lookup service during the ordinary reconnect's stop/start gap.
 
+IP-family discovery reads current physical `LinkProperties` on each connection or
+benchmark check. It has no time-based cache, so another network or changed addresses
+on the same network cannot inherit a previous result for 60 seconds. Selection prefers
+the active non-VPN internet network, then an available validated physical internet
+network, then an unvalidated one, matching DoH endpoint discovery. The VPN's synthetic
+TUN address is never used. Missing network/properties/addresses retain the existing
+unknown fallback (`DUAL_STACK`). Address presence does not prove IPv6 reachability or
+identify the exact VPN underlay when multiple physical networks coexist. Fresh discovery
+also does not itself trigger reconnection after a same-network address change.
+
 A separate, versioned `VpnRecoveryStore` durably records the intended active configuration in SharedPreferences. Sticky/system starts restore it with a new request identity. Accepted disconnects, revocation and startup/forwarding failure clear it; the next selected profile does not overwrite it.
 
 `VpnRecoveryService` is a small, unbound started service in the same process as the foreground VPN. Android can lose a VPN service's sticky restart bookkeeping when interface removal unbinds an already-dead process. The companion keeps a separate restart record and asks the VPN service to reread current recovery intent. It adds no timer, worker, network request, separate process or notification. The foreground VPN starts it after establishment and stops it on intentional teardown, including a temporary speed-test pause. Queued companion starts reread the store and the current service event. An already-active configuration needs no restore command; a stopped/failed event prevents delayed work from undoing a pause in the same process. A fresh process has no old event, so it restores durable intent.

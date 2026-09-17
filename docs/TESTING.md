@@ -325,3 +325,32 @@ checks the real callback-to-service path and counts replacement request IDs.
 The recovery assertions do not claim zero DNS downtime while the physical network is
 absent or during the ordinary reconnect's stop/start gap. Real Wi-Fi/mobile handover and
 same-network DNS/address changes require separate acceptance evidence.
+
+### Fresh physical IP-family discovery
+
+`NetworkCapabilitiesRepositoryTest` covers immediate IPv4-to-IPv6 handover,
+same-network address updates, physical selection while the VPN is default, missing
+defaults/properties, validated preference, unvalidated fallback and VPN-only exclusion.
+
+`NetworkFamilyDeviceTest` requires an **owned disposable emulator** with dual-stack
+virtual Wi-Fi and IPv4-only simulated cellular service. Prepare the isolated package,
+VPN consent and notifications as above, with Always-on off. The API 36.1 Google Play
+ARM64 image provides the tested topology. Both APKs must be installed. Run:
+
+```bash
+adb -s emulator-5556 shell am instrument -w \
+  -e ownedNetworkEmulator true \
+  -e class com.vmcsoft.aerodns.NetworkFamilyDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The two cases use one repository instance through Wi-Fi → mobile → Wi-Fi, checking the
+first transition inside the former 60-second cache window. One case retains a real VPN
+and additionally checks that losing all physical networks returns unknown rather than
+the TUN's IPv4 family. A mismatched topology fails the prerequisite assertions. The
+suite cycles Wi-Fi/data and reenables both in cleanup; never run it on a personal phone.
+
+These are Android address-classification checks. They do not prove physical mobile
+handover, automatic repository reconnection, IPv6 reachability, DNS attribution or
+correct underlay selection during overlapping networks. Physical Wi-Fi/mobile checks
+need working mobile data and USB ADB so disabling Wi-Fi keeps the controller connected.
