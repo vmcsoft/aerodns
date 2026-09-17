@@ -354,3 +354,37 @@ These are Android address-classification checks. They do not prove physical mobi
 handover, automatic repository reconnection, IPv6 reachability, DNS attribution or
 correct underlay selection during overlapping networks. Physical Wi-Fi/mobile checks
 need working mobile data and USB ADB so disabling Wi-Fi keeps the controller connected.
+
+### Physical Wi-Fi loss and recovery over USB
+
+`PhysicalWifiRecoveryDeviceTest` is separately opt-in and cycles the phone's Wi-Fi.
+Use it only on a user-authorized test phone with **verified USB ADB**, Wi-Fi connected,
+mobile data already off, Always-on off, no active VPN, and prepared VPN consent for the
+isolated `.validation` package. Confirm `adb devices -l` lists a USB transport and select
+that serial explicitly. Both validation APKs must be installed. Do not use wireless ADB.
+
+```bash
+adb -s USB_SERIAL shell am instrument -w \
+  -e physicalWifiRecovery true \
+  -e class com.vmcsoft.aerodns.PhysicalWifiRecoveryDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The Standard case uses Google DNS `8.8.8.8`; the URL-only DoH case uses
+`https://dns.google/dns-query` with normal certificate verification and no bootstrap IP.
+Each connects through the real service/repository, removes Wi-Fi until sampled DNS
+health fails, and restores Wi-Fi. Recovery must preserve the exact configuration except
+request identity, establish one replacement, resolve a system lookup, and remain stable
+for a second lookup four seconds later. After an explicit disconnect, another Wi-Fi
+cycle must leave the VPN off. These external endpoints must be reachable on the test
+network; an environmental failure is not a pass.
+
+Cleanup disconnects the test VPN and reenables Wi-Fi, without changing mobile data or
+Private DNS. If instrumentation is interrupted or killed, the host must restore Wi-Fi
+with `adb -s USB_SERIAL shell svc wifi enable` and disconnect the validation VPN.
+Inspect JUnit results and `PhysicalWifiTest` logcat entries, then verify Wi-Fi connectivity
+and absence of the validation service. Logs belong outside Git.
+
+The system lookup uses a separate shell process but can receive cached DNS answers.
+It does not establish resolver attribution, zero downtime, Wi-Fi/mobile handover,
+IPv6 reachability, idle recovery or behavior on other manufacturers/Android versions.
