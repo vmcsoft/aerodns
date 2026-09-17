@@ -46,7 +46,15 @@ This routing invariant prevents AeroDNS from becoming an accidental full-tunnel 
 - HTTPS using OkHttp for DoH
 - A hidden DoT transport retained for development but not exposed in the interface
 
-Custom DoH uses an explicit bootstrap IP when configured. Otherwise the endpoint hostname is resolved through a non-VPN Android network, and HTTPS sockets bind to that network before VPN protection and connection. This avoids discovery through the virtual resolver; the underlying network's DNS can see the endpoint hostname.
+Custom DoH uses an explicit bootstrap IP when configured. Otherwise the endpoint hostname is resolved through a non-VPN Android network, and HTTPS sockets bind locally, receive VPN protection, then bind to that network before connecting. This avoids discovery through the virtual resolver; the underlying network's DNS can see the endpoint hostname.
+
+DoH reuses at most eight HTTP clients per transport, evicting the least recently used
+entry and closing its idle connections when full. Keys include endpoint/network,
+timeout, socket protector and certificate policy. A changed endpoint or protector
+retires the old pools for that hostname. Explicit custom certificate bypass uses its
+own reusable client; normal requests never share that client's TLS connections.
+Eviction closes idle connections, while active calls remain governed by their normal
+deadline and cancellation. HTTP redirects remain disabled.
 
 ## State and persistence
 

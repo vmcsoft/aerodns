@@ -134,6 +134,70 @@ English UI labels and validates the report from `dumpsys vpn_management`; check 
 contracts before applying it to another image. It is not signed-upgrade, long-idle,
 manufacturer-specific, or autonomous recovery testing. Keep JSON/logs outside Git.
 
+## Controlled load and idle recovery
+
+Use a disposable API 26+ emulator with the isolated `.validation` app and test APKs,
+VPN/notification consent already granted, Private DNS off and Always-on off. Run the
+loopback fixture separately:
+
+```bash
+python3 app/src/androidTest/fixtures/doh_load_server.py --port 18446
+adb -s emulator-5556 reverse tcp:18446 tcp:18446
+adb -s emulator-5556 shell am instrument -w \
+  -e ownedLoadEmulator true -e loadVariant candidate -e loadPhase steady \
+  -e loadSeconds 60 -e loadTrial trial1 \
+  -e class com.vmcsoft.aerodns.DohLoadDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+adb -s emulator-5556 shell run-as com.vmcsoft.aerodns.validation \
+  cat files/load-candidate-steady-trial1.json > /tmp/load-candidate-steady-trial1.json
+```
+
+Repeat with `loadPhase=mixed` and `burst`, force-stopping the validation package
+between runs. The driver starts and disconnects the actual VPN. Steady sends 20 A
+queries/second; mixed sends ten/second with every twentieth response delayed two
+seconds. Burst sends 96 immediately, all delayed two seconds. Other measured replies
+have 20 ms fixture delay. Each transaction/question is unique and must receive the
+fixture's `192.0.2.42` answer. Duration is 5–300 seconds for steady/mixed; burst is
+always 96 queries. Replies are observed until six seconds after the scheduled last
+send, followed by a fresh-query recovery check and five-second resource cooldown.
+
+Candidate acceptance requires no invalid replies, retained VPN, recovery within 15
+seconds and clean disconnect. Non-overload phases also require at least 99% replies
+and fast-query p95 below one second in this fixture. Burst intentionally overloads
+the bounded queue, so missing responses are reported rather than required to succeed.
+Inspect descriptor/PSS/thread samples for resource growth as well as the assertions.
+CPU time includes the same-process test driver. Server `/stats` reports requests,
+active handlers and distinct client ports; cancelled calls can leave handlers sleeping,
+so handler concurrency is not a direct app-worker measurement.
+
+For comparison, build the selected baseline in a detached temporary worktree with the
+same package suffix. Install that app plus the **same current test APK**, set
+`loadVariant=baseline`, and otherwise keep workload and emulator settings identical.
+The driver uses shared service/configuration APIs and explicitly enables the baseline's
+packet loop. It records baseline loss/recovery without enforcing candidate thresholds.
+Record source identities, APK hashes, order and results; do not call this a comparison
+with a Play-delivered binary unless that exact artifact was used. Never uninstall a
+personal app or overwrite its data for this comparison.
+
+For idle recovery, reinstall the candidate, grant consent and leave the emulator screen
+on with its test VPN disconnected. The host observer reaches the same fixture through
+`10.0.2.2`, backgrounds the app, simulates unplugging, switches the screen off and forces
+deep idle. It checks the selected configuration and a fresh controlled system DNS
+lookup after wake, then restores idle/battery/screen state and disconnects:
+
+```bash
+python3 app/src/androidTest/fixtures/idle_recovery_check.py \
+  --serial emulator-5556 --seconds 180 --output /tmp/idle-recovery.json
+```
+
+The idle observer's dumpsys parsing is validated on API 36. Load and idle use a local
+certificate with the custom bypass explicitly enabled. Real HTTPS host tests separately
+check connection reuse and rejection after switching back to strict validation. These
+workloads do not establish public-provider latency, physical battery drain, overnight
+survival or OEM behavior. Keep raw reports outside Git. Stop fixtures with Ctrl-C to
+delete their temporary certificates, remove owned reverse ports and shut down the
+disposable emulator after testing.
+
 ## Always-on and notification regressions
 
 `NotificationBurstDeviceTest` rapidly replaces twenty resolver configurations, then

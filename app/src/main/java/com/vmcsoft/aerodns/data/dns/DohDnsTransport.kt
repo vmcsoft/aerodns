@@ -44,7 +44,7 @@ class DohDnsTransport @Inject constructor(
 
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO
     private val overallTimeoutMs: Long = 5000L
-    private val callFactoryCache = mutableMapOf<CallFactoryCacheKey, Call.Factory>()
+    private val callFactoryCache = LinkedHashMap<CallFactoryCacheKey, OkHttpClient>(8, 0.75f, true)
 
     suspend fun query(
         payload: ByteArray,
@@ -80,10 +80,11 @@ class DohDnsTransport @Inject constructor(
 
                     val startTime = System.nanoTime()
                     val callFactory = if (allowUntrustedCertificates) {
-                        CustomDohUnsafeClientFactory.build(
+                        cachedCallFactory(
                             endpoint = endpoint,
                             timeoutMs = timeoutMs,
-                            socketProtector = socketProtector
+                            socketProtector = socketProtector,
+                            allowUntrustedCertificates = true
                         )
                     } else {
                         callFactoryBuilder(endpoint, timeoutMs, socketProtector)
@@ -125,21 +126,40 @@ class DohDnsTransport @Inject constructor(
         endpoint: DohEndpoint,
         timeoutMs: Int,
         socketProtector: DnsSocketProtector
-    ): Call.Factory {
+    ): Call.Factory = cachedCallFactory(endpoint, timeoutMs, socketProtector, false)
+
+    internal fun cachedCallFactory(
+        endpoint: DohEndpoint,
+        timeoutMs: Int,
+        socketProtector: DnsSocketProtector,
+        allowUntrustedCertificates: Boolean
+    ): OkHttpClient {
         val key = CallFactoryCacheKey(
             endpoint = endpoint,
             timeoutMs = timeoutMs,
-            socketProtector = socketProtector
+            socketProtector = socketProtector,
+            allowUntrustedCertificates = allowUntrustedCertificates
         )
         return synchronized(callFactoryCache) {
             // Do not retain pooled connections for an old network or an old answer.
             val obsolete = callFactoryCache.keys.filter {
-                it.endpoint.hostname == endpoint.hostname && it.endpoint != endpoint
+                it.endpoint.hostname == endpoint.hostname &&
+                    (it.endpoint != endpoint || it.socketProtector != socketProtector)
             }
             obsolete.forEach { oldKey ->
-                (callFactoryCache.remove(oldKey) as? OkHttpClient)?.connectionPool?.evictAll()
+                callFactoryCache.remove(oldKey)?.connectionPool?.evictAll()
             }
-            callFactoryCache.getOrPut(key) {
+            callFactoryCache[key]?.let { return@synchronized it }
+            // A profile/timeout sweep must not retain an unbounded set of pools.
+            if (callFactoryCache.size >= MAX_CACHED_CLIENTS) {
+                val oldest = callFactoryCache.keys.first()
+                callFactoryCache.remove(oldest)?.connectionPool?.evictAll()
+            }
+            // Certificate policy is part of the key. Never reuse an opted-in TLS
+            // connection for a request that requires normal certificate validation.
+            val client = if (allowUntrustedCertificates) {
+                CustomDohUnsafeClientFactory.build(endpoint, timeoutMs, socketProtector)
+            } else {
                 OkHttpClient.Builder()
                     .dns(CustomDohBootstrapDns(endpoint))
                     .socketFactory(ProtectedSocketFactory(socketProtector, endpoint.network))
@@ -152,6 +172,8 @@ class DohDnsTransport @Inject constructor(
                     .followSslRedirects(false)
                     .build()
             }
+            callFactoryCache[key] = client
+            client
         }
     }
 
@@ -274,11 +296,13 @@ class DohDnsTransport @Inject constructor(
         private const val DNS_MESSAGE_CONTENT_TYPE = "application/dns-message"
         private val DNS_MESSAGE_MEDIA_TYPE = DNS_MESSAGE_CONTENT_TYPE.toMediaType()
         private const val MAX_DNS_RESPONSE_SIZE = 65_535
+        private const val MAX_CACHED_CLIENTS = 8
     }
 
     private data class CallFactoryCacheKey(
         val endpoint: DohEndpoint,
         val timeoutMs: Int,
-        val socketProtector: DnsSocketProtector
+        val socketProtector: DnsSocketProtector,
+        val allowUntrustedCertificates: Boolean
     )
 }

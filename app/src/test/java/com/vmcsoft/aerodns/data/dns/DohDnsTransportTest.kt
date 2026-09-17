@@ -300,6 +300,41 @@ class DohDnsTransportTest {
     }
 
     @Test
+    fun `opted-in pools are replaced after network answer or socket protector changes`() {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk()))
+        val first = endpoint("resolver.example", "203.0.113.10").copy(network = mockk())
+        fun client(endpoint: DohEndpoint, protector: DnsSocketProtector = NoopDnsSocketProtector) =
+            transport.cachedCallFactory(endpoint, 1000, protector, true)
+        val initial = client(first)
+        assertSame(initial, client(first))
+        val nextNetwork = first.copy(network = mockk())
+        val next = client(nextNetwork)
+        assertNotSame(initial, next)
+        val nextAnswer = nextNetwork.copy(addresses = listOf(InetAddress.getByName("203.0.113.11")))
+        assertNotSame(next, client(nextAnswer))
+        val protector = mockk<DnsSocketProtector>()
+        val protected = client(nextAnswer, protector)
+        assertNotSame(protected, client(nextAnswer))
+        assertNotSame(initial, client(first))
+    }
+
+    @Test
+    fun `profile sweeps evict least recently used clients across certificate policies`() {
+        val transport = DohDnsTransport(DohEndpointResolver(mockk()))
+        fun client(index: Int) = transport.cachedCallFactory(
+            endpoint("resolver$index.example", "203.0.113.10"), 1000, NoopDnsSocketProtector,
+            allowUntrustedCertificates = index % 2 == 0
+        )
+        val first = client(0)
+        val second = client(1)
+        (2..7).forEach { client(it) }
+        assertSame(first, client(0)) // Refresh usage before the ninth distinct profile.
+        client(8)
+        assertSame(first, client(0))
+        assertNotSame(second, client(1))
+    }
+
+    @Test
     fun `protected socket binds discovered network after VPN protection and before connect`() {
         val network = mockk<Network>()
         var protected = false

@@ -120,6 +120,30 @@ class DohEndpointIntegrationTest {
         }
     }
 
+    @Test fun `opted-in queries reuse their TLS connection and cannot weaken a later strict query`() = runBlocking {
+        val cert = HeldCertificate.Builder().addSubjectAlternativeName(HOST).build()
+        MockWebServer().use { server ->
+            server.protocols = listOf(okhttp3.Protocol.HTTP_1_1)
+            startTls(server, cert)
+            repeat(3) {
+                server.enqueue(MockResponse().setHeader("Content-Type", "application/dns-message")
+                    .setBody(Buffer().write(byteArrayOf(1, 2))))
+            }
+            val transport = DohDnsTransport(DohEndpointResolver(mockk()))
+            val url = "https://$HOST:${server.port}/dns-query"
+            repeat(3) {
+                val result = transport.query(byteArrayOf(1), url, emptyList(), 1000, "127.0.0.1", true)
+                assertTrue(result.toString(), result is DnsTransportResult.Success)
+                assertEquals("Queries must share one connection", it,
+                    server.takeRequest(1, TimeUnit.SECONDS)!!.sequenceNumber)
+            }
+            val strict = transport.query(byteArrayOf(1), url, emptyList(), 1000, "127.0.0.1")
+            assertTrue(strict.toString(), strict is DnsTransportResult.Error)
+            assertEquals(DnsSecurityMessages.UNTRUSTED_CERTIFICATE, (strict as DnsTransportResult.Error).message)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
     private fun startTls(server: MockWebServer, cert: HeldCertificate) {
         val certificates = HandshakeCertificates.Builder().heldCertificate(cert).build()
         server.useHttps(certificates.sslSocketFactory(), false)
