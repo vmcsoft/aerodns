@@ -1,24 +1,63 @@
 # Testing
 
+Start with the host checks below. Device suites require explicit setup and exercise
+different Android/network behaviors; a successful build does not imply they ran.
+
+- [Automated tests](#automated-tests)
+- [Isolated validation package](#isolated-validation-package)
+- [Process recovery](#host-driven-process-recovery)
+- [Consent and startup](#dashboard-and-tile-startup-with-real-consent)
+- [Upgrade persistence](#in-place-settings-persistence)
+- [Manual regression checklist](#manual-regression-checklist)
+- [Resolver identity and network loss](#controlled-resolver-identity-and-network-loss)
+
 ## Automated tests
 
-Run the complete local unit-test suite:
+Use JDK 17, Android SDK Platform 36.1 and Build Tools 36.0.0. Run the same host
+checks as CI from the repository root:
 
 ```bash
-./gradlew testDebugUnitTest
+python3 -m unittest discover -s app/src/androidTest/fixtures -p 'test_*.py'
+./gradlew testDebugUnitTest lintDebug lintRelease assembleDebug assembleDebugAndroidTest assembleRelease bundleRelease
 ```
 
-Build the debug application:
+CI compiles the instrumentation APK but does not run device tests. It keeps unit-test
+and lint reports for 14 days. Local reports are under `app/build/reports/` and
+`app/build/test-results/`; review failures and skipped cases explicitly. Release APKs
+and bundles are unsigned unless you supply a separate local signing configuration.
+
+Python fixtures use the standard library; HTTPS fixtures also need OpenSSL. Keep their
+generated keys, captures and reports outside Git. Tests using public DNS endpoints
+need internet access; document the network when interpreting failures.
+
+## Isolated validation package
+
+Use `.validation` for development alongside a Play-installed app. Create a temporary
+Gradle init script **outside the checkout**, for example
+`/tmp/aerodns-validation.init.gradle`:
+
+```groovy
+allprojects { p ->
+    p.plugins.withId('com.android.application') {
+        p.android.buildTypes.debug.applicationIdSuffix = '.validation'
+    }
+}
+```
+
+Build and install on an explicitly selected device or owned emulator:
 
 ```bash
-./gradlew assembleDebug
+./gradlew -I /tmp/aerodns-validation.init.gradle assembleDebug assembleDebugAndroidTest
+adb devices -l
+adb -s YOUR_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s YOUR_SERIAL install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 ```
 
-Build the minified release APK and Android App Bundle:
-
-```bash
-./gradlew assembleRelease bundleRelease
-```
+This leaves release application IDs and the existing Play app's data unchanged. A
+debug-signed build with the production ID cannot update the Play-signed installation.
+Grant VPN consent and notification permission to the validation app before applicable
+tests. Some opt-in suites change network or Always-on settings: use their documented
+disposable-emulator setup and never run the entire device suite blindly on a daily phone.
 
 ## Device tests
 
@@ -44,17 +83,7 @@ an isolated `.validation` debug APK. The host remains alive while the app proces
 killed or Android reboots; instrumentation inside that process cannot observe its own
 restart. `SIGKILL` is a process-death test; force-stop has different Android semantics.
 
-Build the isolated package with a temporary Gradle init script outside the checkout:
-
-```groovy
-allprojects { p ->
-    p.plugins.withId('com.android.application') {
-        p.android.buildTypes.debug.applicationIdSuffix = '.validation'
-    }
-}
-```
-
-Pass that script to `./gradlew -I /tmp/aerodns-validation.init.gradle assembleDebug`.
+Build the [isolated validation package](#isolated-validation-package) with its external init script.
 Select the owned emulator serial explicitly in every command below (example: `emulator-5556`).
 Install `app/build/outputs/apk/debug/app-debug.apk` there. Start the fixture in a separate terminal:
 

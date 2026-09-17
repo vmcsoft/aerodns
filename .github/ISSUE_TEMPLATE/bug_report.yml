@@ -20,6 +20,7 @@ body:
   - type: input
     attributes:
       label: Android version and device
+      description: Include the Android version, device model and manufacturer OS version, if known.
     validations:
       required: true
   - type: dropdown
@@ -31,6 +32,17 @@ body:
         - Not sure
     validations:
       required: true
+  - type: textarea
+    attributes:
+      label: Network and VPN settings
+      description: Include Wi-Fi or mobile, Android Private DNS, Always-on VPN, and Block connections without VPN. Omit private resolver addresses or URLs.
+  - type: dropdown
+    attributes:
+      label: Installation source
+      options:
+        - Google Play
+        - Built from source
+        - Other
   - type: textarea
     attributes:
       label: Steps to reproduce
