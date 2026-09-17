@@ -162,8 +162,8 @@ class VpnRepositoryImpl internal constructor(
 
     private suspend fun handleNetworkChange(networkState: NetworkState) {
         when (networkState) {
-            is NetworkState.Available, is NetworkState.Changed -> {
-                // Network is available or changed, attempt reconnect if we were connected
+            is NetworkState.Available -> {
+                // Validated physical-network membership changed; preserve the active profile.
                 val currentState = _connectionState.value
                 if (currentState is ConnectionState.Connected && !isReconnecting) {
                     Log.d(TAG, "Network changed, reconnecting VPN...")

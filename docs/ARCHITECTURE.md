@@ -68,6 +68,16 @@ the same explicit destination as their connected socket for older Android compat
 This verifies sampled resolver reachability; controlled attribution of other apps'
 DNS queries remains separate acceptance work.
 
+`NetworkMonitor` observes the set of validated, internet-capable non-VPN networks.
+One arrival produces one immutable membership snapshot; the initial and later capability
+notifications for that same network do not request another reconnect. Losing validation
+or connectivity removes the network, and regaining it is a new arrival. Losing one of
+two networks reports the survivor rather than global loss. Registration supplies existing
+physical networks; the VPN default is never used to seed physical availability. Reconnect
+readiness also checks physical networks, so a still-validated VPN cannot hide an outage.
+This tracks physical membership, not the exact default underlay, same-network DNS/address
+changes, or uninterrupted lookup service during the ordinary reconnect's stop/start gap.
+
 A separate, versioned `VpnRecoveryStore` durably records the intended active configuration in SharedPreferences. Sticky/system starts restore it with a new request identity. Accepted disconnects, revocation and startup/forwarding failure clear it; the next selected profile does not overwrite it.
 
 `VpnRecoveryService` is a small, unbound started service in the same process as the foreground VPN. Android can lose a VPN service's sticky restart bookkeeping when interface removal unbinds an already-dead process. The companion keeps a separate restart record and asks the VPN service to reread current recovery intent. It adds no timer, worker, network request, separate process or notification. The foreground VPN starts it after establishment and stops it on intentional teardown, including a temporary speed-test pause. Queued companion starts reread the store and the current service event. An already-active configuration needs no restore command; a stopped/failed event prevents delayed work from undoing a pause in the same process. A fresh process has no old event, so it restores durable intent.

@@ -15,9 +15,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed class NetworkState {
-    object Available : NetworkState()
+    data class Available(val networks: Set<Network>) : NetworkState()
     object Lost : NetworkState()
-    data class Changed(val network: Network) : NetworkState()
 }
 
 @Singleton
@@ -32,38 +31,40 @@ class NetworkMonitor @Inject constructor(
     }
 
     val networkState: Flow<NetworkState> = callbackFlow {
+        // Callback membership already means INTERNET + VALIDATED + NOT_VPN.
+        // Capability notifications (including those immediately following onAvailable)
+        // do not imply another physical-network arrival.
+        val networks = linkedSetOf<Network>()
+        fun publish() {
+            trySend(if (networks.isEmpty()) NetworkState.Lost else NetworkState.Available(networks.toSet()))
+        }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available: $network")
-                trySend(NetworkState.Available)
+                Log.d(TAG, "Physical network available: $network")
+                if (networks.add(network)) publish()
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                // Still satisfies the request. Validation loss/recovery is delivered as
+                // onLost/onAvailable; bandwidth or metering changes need no VPN restart.
             }
 
             override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost: $network")
-                trySend(NetworkState.Lost)
-            }
-
-            override fun onCapabilitiesChanged(
-                network: Network,
-                networkCapabilities: NetworkCapabilities
-            ) {
-                Log.d(TAG, "Network capabilities changed: $network")
-                trySend(NetworkState.Changed(network))
+                Log.d(TAG, "Physical network lost: $network")
+                if (networks.remove(network)) publish()
             }
         }
 
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
 
+        publish()
+        // Registration delivers onAvailable for existing matching networks too.
+        // Do not seed from activeNetwork: it may be the VPN itself.
         connectivityManager.registerNetworkCallback(networkRequest, callback)
-
-        // Send initial state
-        val activeNetwork = connectivityManager.activeNetwork
-        if (activeNetwork != null) {
-            trySend(NetworkState.Available)
-        }
 
         awaitClose {
             Log.d(TAG, "Unregistering network callback")
@@ -71,10 +72,12 @@ class NetworkMonitor @Inject constructor(
         }
     }.distinctUntilChanged()
 
-    fun isNetworkAvailable(): Boolean {
-        val activeNetwork = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-               capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    @Suppress("DEPRECATION")
+    fun isNetworkAvailable(): Boolean = connectivityManager.allNetworks.any { network ->
+        val capabilities = connectivityManager.getNetworkCapabilities(network)
+        capabilities != null &&
+            !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 }

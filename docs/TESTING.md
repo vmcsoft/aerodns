@@ -295,7 +295,9 @@ must fail despite the working underlay answer. No explicit bootstrap IP is confi
 The seven cases cover the underlay control, Standard attribution, six immediate Standard
 lookups across replacements, DoH replacement/failure, certificate opt-in isolation, and offline/recovery plus explicit-stop persistence for
 both protocols. The recovery checks require a new validated physical network, unchanged
-profile settings, and a fresh lookup; a direct endpoint-resolver check also requires a
+profile settings, exactly one replacement request, and fresh system lookups immediately
+after recovered health and four seconds later. The recovered request identity must remain
+unchanged during that interval; a direct endpoint-resolver check also requires a
 new network identity. The endpoint IP stays constant, so this does not test changing DNS
 records. Correlate `ResolverAttributionTest` logcat entries with fixture journal names:
 DoH probes must appear only on the selected HTTPS path, Standard probes on UDP, and strict
@@ -311,3 +313,15 @@ Cleanup reenables emulator Wi-Fi/data even on a failed assertion. After recordin
 stop only the owned emulator and fixture and delete temporary test keys. This suite does
 not establish physical Wi-Fi/mobile handover, Android Private DNS interoperability,
 lockdown, IPv6 transport, signed-upgrade compatibility, or OEM behavior.
+
+### Physical-network callback regression coverage
+
+`NetworkMonitorTest` exercises repeated arrival/capability bursts, interleaved Wi-Fi and
+mobile callbacks, survivor/loss/revalidation transitions, immutable published membership,
+VPN-default exclusion, callback cleanup, and physical reconnect readiness. These are host
+contract tests with mocked Android objects. `NetworkTransitionDeviceTest` independently
+checks the real callback-to-service path and counts replacement request IDs.
+
+The recovery assertions do not claim zero DNS downtime while the physical network is
+absent or during the ordinary reconnect's stop/start gap. Real Wi-Fi/mobile handover and
+same-network DNS/address changes require separate acceptance evidence.

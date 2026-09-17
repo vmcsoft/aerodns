@@ -16,6 +16,7 @@ import com.vmcsoft.aerodns.validation.ValidationRepositories
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -112,30 +113,48 @@ class NetworkTransitionDeviceTest {
         lossAndRecovery(standard())
     }
 
-    private suspend fun lossAndRecovery(config: DnsConnectionConfig) {
+    private suspend fun lossAndRecovery(config: DnsConnectionConfig) = coroutineScope {
         connect(config); healthy(config.serverId); assertLookup(42)
-        val before = physical().toSet()
-        val endpointBefore = resolveEndpoint()
-        assertTrue(endpointBefore.network in before)
-        shell("svc wifi disable")
-        await(15000) { physical().isEmpty() }
-        withTimeout(42000) { repository.connectionState.first { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Unhealthy } }
-        assertTrue(hasVpn())
-        shell("svc wifi enable")
-        await(30000) { physical().any { it !in before && connectivity.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true } }
-        val recovered = healthy(config.serverId, 45000)
-        assertEquals(config.copy(connectionRequestId = ""), recovered.activeConfig!!.copy(connectionRequestId = ""))
-        val endpointAfter = resolveEndpoint()
-        assertNotEquals(endpointBefore.network, endpointAfter.network)
-        assertTrue(endpointAfter.network in physical())
-        assertEquals(endpointBefore.addresses, endpointAfter.addresses)
-        assertLookup(42)
-        repository.disconnect(); await(8000) { !hasVpn() }
-        shell("svc wifi disable"); await(15000) { physical().isEmpty() }
-        shell("svc wifi enable"); await(30000) { physical().isNotEmpty() }
-        delay(4000)
-        assertFalse("Network return must not undo explicit disconnect", hasVpn())
-        assertTrue(repository.connectionState.value is ConnectionState.Disconnected)
+        val replacements = linkedSetOf<String>()
+        val observer = launch(start = CoroutineStart.UNDISPATCHED) {
+            DnsVpnServiceEvents.events.collect { event ->
+                if (event is DnsVpnServiceEvent.Established && event.config.serverId == config.serverId &&
+                    event.config.connectionRequestId != config.connectionRequestId) {
+                    replacements += event.config.connectionRequestId
+                }
+            }
+        }
+        try {
+            val before = physical().toSet()
+            val endpointBefore = resolveEndpoint()
+            assertTrue(endpointBefore.network in before)
+            shell("svc wifi disable")
+            await(15000) { physical().isEmpty() }
+            withTimeout(42000) { repository.connectionState.first { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Unhealthy } }
+            assertTrue(hasVpn())
+            shell("svc wifi enable")
+            await(30000) { physical().any { it !in before && connectivity.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true } }
+            val recovered = healthy(config.serverId, 45000)
+            assertEquals(config.copy(connectionRequestId = ""), recovered.activeConfig!!.copy(connectionRequestId = ""))
+            val endpointAfter = resolveEndpoint()
+            assertNotEquals(endpointBefore.network, endpointAfter.network)
+            assertTrue(endpointAfter.network in physical())
+            assertEquals(endpointBefore.addresses, endpointAfter.addresses)
+            // A fresh unbound lookup must work immediately after recovered health, and
+            // capability callbacks must not replace that recovered interface again.
+            assertLookup(42)
+            delay(4000)
+            assertEquals("One network return must establish exactly one replacement", 1, replacements.size)
+            assertEquals(recovered.activeConfig!!.connectionRequestId,
+                (repository.connectionState.value as ConnectionState.Connected).activeConfig!!.connectionRequestId)
+            assertLookup(42)
+            repository.disconnect(); await(8000) { !hasVpn() }
+            shell("svc wifi disable"); await(15000) { physical().isEmpty() }
+            shell("svc wifi enable"); await(30000) { physical().isNotEmpty() }
+            delay(4000)
+            assertFalse("Network return must not undo explicit disconnect", hasVpn())
+            assertTrue(repository.connectionState.value is ConnectionState.Disconnected)
+        } finally { observer.cancel() }
     }
 
     private fun standard() = DnsConnectionConfig("controlled-standard", "Controlled Standard", DnsProtocol.STANDARD,
