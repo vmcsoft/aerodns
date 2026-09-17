@@ -77,7 +77,9 @@ def main():
         for scenario in ['standard', 'doh', 'legacy']:
             record = {'scenario': scenario, 'phases': []}
             report['scenarios'].append(record)
-            adb('install', '-r', str(args.baseline))
+            # Reset setup to the older debug baseline between independent scenarios.
+            # Only baseline staging permits a downgrade; the tested update below does not.
+            adb('install', '-r', '-d', str(args.baseline))
             adb('install', '-r', str(args.test_apk))
             assert adb('shell', 'pm', 'clear', PACKAGE) == 'Success'
             adb('shell', 'appops', 'set', PACKAGE, 'ACTIVATE_VPN', 'allow')

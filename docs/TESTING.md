@@ -141,6 +141,9 @@ then verifies them on the candidate after an actual Android package replacement.
 Use the host driver on an **owned disposable API 33+ emulator** with no active VPN
 or Always-on setting. It clears only the isolated `.validation` package between
 scenarios; there is no uninstall or data clear between baseline and candidate.
+Baseline staging permits a debug-package downgrade so each independent scenario can
+start from the older version after the preceding scenario installed the candidate.
+The baseline-to-candidate update itself uses `install -r` without downgrade permission.
 
 Build the source baseline in a separate temporary worktree using the same `.validation`
 init script described above. Build the candidate and current test APK. Keep JDK tools
