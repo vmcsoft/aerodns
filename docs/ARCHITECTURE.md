@@ -59,8 +59,10 @@ resolver using Android's normal UID routing: explicitly binding to a route-free 
 would prevent split-tunnel fallthrough on older Android. Neither probe is protected
 from the VPN, and neither uses another resolver or the system's hostname cache.
 
-When older Android reports the physical network as the default, the probe finds the
-sole matching VPN from available networks. Ambiguous matches and send failures during
+On Android 7–9, when the physical network remains the default, the probe finds the
+sole matching VPN from available networks. Android 10+ requires the matching VPN to be
+the active network: an explicit resolver probe can succeed before the OS resolver has
+switched away from the underlay. Ambiguous matches and send failures during
 route installation retry within the existing five-second budget. UDP packets carry
 the same explicit destination as their connected socket for older Android compatibility.
 This verifies sampled resolver reachability; controlled attribution of other apps'

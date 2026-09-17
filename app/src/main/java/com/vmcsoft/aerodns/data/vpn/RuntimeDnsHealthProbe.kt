@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
 import com.vmcsoft.aerodns.data.dns.DnsHealthResponse
 import com.vmcsoft.aerodns.data.dns.DnsWireMessage
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
@@ -80,9 +81,11 @@ internal class RuntimeDnsHealthProbe(context: Context) {
             }
         }
         connectivity.activeNetwork?.let { matchingRoute(it)?.let { route -> return route } }
-        // Older Android can report the physical default for a DNS-only VPN.
-        // Use the sole matching VPN; during ambiguous handover,
-        // wait within the existing readiness budget instead of choosing an old one.
+        // Android 7–9 can keep reporting the physical default for a DNS-only VPN.
+        // Modern Android must finish the default-network handoff before reporting
+        // healthy: an explicit probe can succeed while OS lookups still use the underlay.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return null
+        // During ambiguous legacy handover, wait rather than choosing an old VPN.
         return connectivity.allNetworks.mapNotNull(::matchingRoute).singleOrNull()
     }
 

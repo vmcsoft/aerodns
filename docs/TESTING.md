@@ -239,3 +239,75 @@ adb logcat | rg 'AeroDNS|DnsVpnService|DnsForwarder|DohDnsTransport|TunDnsPacket
 ```
 
 Remove real resolver URLs, IP addresses, and other personal network details before attaching logs to an issue.
+
+## Controlled resolver identity and network loss
+
+`NetworkTransitionDeviceTest` is opt-in and requires an **owned disposable API 34+
+emulator**. It disables cellular data and cycles Wi-Fi; do not run it on a personal
+phone. Its shell stdout/stderr capture uses the API 34 `executeShellCommandRwe` API.
+Use the separate `.validation` package and VPN/notification preparation described above,
+with Always-on disabled. Build both `assembleDebug` and `assembleDebugAndroidTest` with
+the external init script and install both APKs on the selected emulator.
+
+Start `app/src/androidTest/fixtures/resolver_identity_server.py` on the host. The emulator
+must reach UDP port **53** and HTTPS port **18445** at `10.0.2.2`. The script defaults to
+unprivileged UDP 15353 and HTTPS 18444; supply explicit ports or use loopback-only container
+port mappings (`127.0.0.1:53:15353/udp`, `127.0.0.1:18445:18444`). When containerized, use
+`--listen 0.0.0.0` inside the container, keeping the published host ports loopback-only.
+For a host runtime permitted to bind UDP 53, the direct command is:
+
+```bash
+python3 app/src/androidTest/fixtures/resolver_identity_server.py \
+  --dns-port 53 --https-port 18445 --journal /tmp/aerodns-identity.jsonl
+```
+
+If binding 53 is denied, use a local container port mapping instead; do not change the
+system DNS configuration. Generate the short-lived self-signed certificate locally, or
+provide a matched `--cert` and `--key` pair when OpenSSL is unavailable in the fixture runtime. Store its `--journal`
+and certificate/key outside the repository. Never replace another service using port 53.
+
+The fixture answers fresh `*.aerodns.test` A queries with `192.0.2.42` via UDP or HTTPS
+`/42`, and `192.0.2.43` via HTTPS `/43`. `/fail` returns SERVFAIL. It returns empty AAAA
+answers, so this is IPv4 DNS transport coverage, not IPv6 resolver attribution. Only
+generated test names are journaled; unrelated UDP questions are forwarded to Google DNS
+for emulator connectivity validation without being logged. `example.com` health probes
+receive the fixture answer. Test addresses are documentation-only; ICMP delivery is not
+expected. Assertions inspect the OS-resolved address or explicit `unknown host` error.
+
+Disable Android Private DNS on this disposable emulator for the controlled DNS path:
+
+```bash
+adb -s emulator-5556 shell settings put global private_dns_mode off
+adb -s emulator-5556 shell am instrument -w \
+  -e ownedNetworkEmulator true \
+  -e class com.vmcsoft.aerodns.NetworkTransitionDeviceTest \
+  com.vmcsoft.aerodns.validation.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+First run with ordinary emulator DNS. The underlay control must fail to resolve the
+fixture domain; selected Standard and DoH lookups must return their distinct answers.
+Then restart the same owned emulator with `-dns-server 127.0.0.1`, keeping the host fixture
+running, and repeat with `-e fixtureBootstrap true`. In that mode, the underlay control
+returns `.42`, and the URL-only DoH hostname `bootstrap.aerodns.test` resolves through the
+physical network to the fixture. DoH `/43` must still return `.43`; SERVFAIL and strict TLS
+must fail despite the working underlay answer. No explicit bootstrap IP is configured.
+
+The seven cases cover the underlay control, Standard attribution, six immediate Standard
+lookups across replacements, DoH replacement/failure, certificate opt-in isolation, and offline/recovery plus explicit-stop persistence for
+both protocols. The recovery checks require a new validated physical network, unchanged
+profile settings, and a fresh lookup; a direct endpoint-resolver check also requires a
+new network identity. The endpoint IP stays constant, so this does not test changing DNS
+records. Correlate `ResolverAttributionTest` logcat entries with fixture journal names:
+DoH probes must appear only on the selected HTTPS path, Standard probes on UDP, and strict
+TLS must produce no accepted fixture query. Never count empty shell output as success.
+
+Run fixture regressions with:
+
+```bash
+python3 -m unittest discover -s app/src/androidTest/fixtures -p 'test_*.py'
+```
+
+Cleanup reenables emulator Wi-Fi/data even on a failed assertion. After recording results,
+stop only the owned emulator and fixture and delete temporary test keys. This suite does
+not establish physical Wi-Fi/mobile handover, Android Private DNS interoperability,
+lockdown, IPv6 transport, signed-upgrade compatibility, or OEM behavior.
