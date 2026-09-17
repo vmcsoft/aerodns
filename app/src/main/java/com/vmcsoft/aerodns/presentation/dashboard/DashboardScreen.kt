@@ -53,7 +53,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import android.content.Intent
+import android.app.Activity
+import android.net.VpnService
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.disabled
@@ -112,6 +116,25 @@ fun DashboardScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val selectedProtocol by viewModel.selectedProtocol.collectAsState()
 
+    val context = LocalContext.current
+    // Keep this action only for the current screen instance. A recreated screen may
+    // retain consent, but must not replay an old connection choice automatically.
+    var pendingVpnAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val action = pendingVpnAction
+        pendingVpnAction = null
+        if (result.resultCode == Activity.RESULT_OK && VpnService.prepare(context) == null) action?.invoke()
+    }
+    fun withVpnPermission(action: () -> Unit) {
+        val intent = VpnService.prepare(context)
+        if (intent == null) action() else {
+            pendingVpnAction = action
+            vpnPermissionLauncher.launch(intent)
+        }
+    }
+
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(errorMessage) {
         errorMessage?.let { message ->
@@ -154,7 +177,11 @@ fun DashboardScreen(
                     ConnectionPanel(
                         connectionState = connectionState,
                         selectedProtocol = selectedProtocol,
-                        onConnectToggle = viewModel::onConnectToggle
+                        onConnectToggle = {
+                            if (connectionState is ConnectionState.Disconnected || connectionState is ConnectionState.Error) {
+                                withVpnPermission(viewModel::onConnectToggle)
+                            } else viewModel.onConnectToggle()
+                        }
                     )
 
                     selectedServer?.let { server ->
@@ -201,8 +228,10 @@ fun DashboardScreen(
                     state = speedTestState,
                     onDismiss = { viewModel.onDismissSpeedTest() },
                     onSelectDns = { result ->
-                        viewModel.onSpeedTestResultSelected(result)
-                        viewModel.onDismissSpeedTest()
+                        withVpnPermission {
+                            viewModel.onSpeedTestResultSelected(result)
+                            viewModel.onDismissSpeedTest()
+                        }
                     },
                     onRetest = {
                         viewModel.onShowSpeedTest()

@@ -14,6 +14,7 @@ import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
+import com.vmcsoft.aerodns.domain.model.DnsHealth
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -54,6 +55,14 @@ class DohResponseBoundsDeviceTest {
                 }
             }
             assertTrue(event.toString(), event is DnsVpnServiceEvent.Established)
+            // This case measures response bounds, not first-packet route installation.
+            // Interface visibility can precede DNS readiness; use the app's health contract.
+            val ready = withTimeout(8000) {
+                DnsVpnServiceEvents.events.first {
+                    it is DnsVpnServiceEvent.Established && it.config == config && it.health != DnsHealth.Checking
+                }
+            } as DnsVpnServiceEvent.Established
+            assertTrue("Fixture must be healthy before response-size probes: ${ready.health}", ready.health is DnsHealth.Healthy)
             val network = awaitVpn()
             assertEquals(4096, query(network, "medium", 8000).size)
             // Some kernels reject a near-64 KiB datagram with ENOBUFS. Either delivery

@@ -106,6 +106,34 @@ setting, stop the fixture, and shut down the owned emulator after the run. A pas
 emulator test does not establish OEM, low-memory eviction, lockdown, or
 production-upgrade behavior.
 
+## Dashboard and tile startup with real consent
+
+`app/src/androidTest/fixtures/startup_entry_check.py` drives the Android consent dialog,
+dashboard, speed-test activation and SystemUI tile from the host. Use an **owned disposable
+emulator**, the isolated `.validation` APK, working internet, English UI, notifications
+enabled and Always-on off. It revokes consent for the test package, force-stops its
+process, and adds/removes its tile; do not use a saved personal emulator. It does not
+pregrant VPN consent. Install the debug APK before running:
+
+```bash
+python3 app/src/androidTest/fixtures/startup_entry_check.py \
+  --serial emulator-5558 --output /tmp/aerodns-startup.json
+```
+
+Use `--scenario dashboard`, `speed-test` or `tile` for a focused run. The full run checks
+cold dashboard denial, repeated denial/retry, consent followed by healthy connection,
+prepared cold dashboard startup, six seconds backgrounded, UI disconnect, speed-test
+activation denial/retry, and unprepared/prepared cold tile starts. Each cold start
+requires the process to be absent before the user action. Permission grant from the tile
+opens the dashboard without auto-connecting. The prepared tile connects directly.
+
+The benchmark selects the real Cloudflare result and requires it to be reachable; an
+external endpoint failure is not a pass. Assertions require an actual active VPN and
+healthy app notification, or both absent after stop/denial. The script requires current
+English UI labels and validates the report from `dumpsys vpn_management`; check these
+contracts before applying it to another image. It is not signed-upgrade, long-idle,
+manufacturer-specific, or autonomous recovery testing. Keep JSON/logs outside Git.
+
 ## Always-on and notification regressions
 
 `NotificationBurstDeviceTest` rapidly replaces twenty resolver configurations, then

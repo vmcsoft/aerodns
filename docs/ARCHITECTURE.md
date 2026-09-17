@@ -50,6 +50,13 @@ Custom DoH uses an explicit bootstrap IP when configured. Otherwise the endpoint
 
 ## State and persistence
 
+The dashboard checks Android VPN consent before connecting or activating a speed-test
+result. Denial leaves the VPN off and allows another attempt from the same screen.
+Granting consent continues the pending action only if Android still reports the app
+prepared. The pending action lives only in the current screen instance; recreation
+does not replay an old connection choice. Disconnect never requires new consent.
+The initial activity launch still requests consent without automatically connecting.
+
 `PreferencesDataStore` stores resolver selection, custom resolver profiles and protocol preference. Repositories expose state through Kotlin `Flow`; `DashboardViewModel` converts it into UI state.
 
 The VPN service owns the actual active configuration and sampled DNS health. Establishment displays “Checking DNS…”; only a valid response through the active DNS path produces “Connected”. Dashboard, notification and tile consume the same service state. The health probe
