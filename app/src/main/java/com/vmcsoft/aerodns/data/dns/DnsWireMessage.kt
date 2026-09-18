@@ -3,6 +3,16 @@ package com.vmcsoft.aerodns.data.dns
 object DnsWireMessage {
     const val DEFAULT_RESPONSE_BUFFER_SIZE = 512
 
+    fun isQuery(payload: ByteArray): Boolean =
+        payload.size >= DNS_HEADER_SIZE && readShort(payload, 2) and DNS_RESPONSE_FLAG == 0
+
+    /** Header correlation only; record contents and DNSSEC remain the client's responsibility. */
+    fun isResponseForQuery(response: ByteArray, query: ByteArray): Boolean =
+        isQuery(query) && response.size >= DNS_HEADER_SIZE &&
+            readShort(response, 0) == readShort(query, 0) &&
+            readShort(response, 2) and DNS_RESPONSE_FLAG != 0 &&
+            (readShort(response, 2) and 0x7800) == (readShort(query, 2) and 0x7800)
+
     fun buildAQuery(queryId: Int, queryName: String): ByteArray {
         val labels = queryName.trim('.').split('.').filter { it.isNotBlank() }
         require(labels.isNotEmpty()) { "DNS query name must not be empty" }

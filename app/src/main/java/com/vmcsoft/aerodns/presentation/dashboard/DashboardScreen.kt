@@ -52,6 +52,15 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.Intent
+import android.app.Activity
+import android.net.VpnService
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -72,8 +81,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.vmcsoft.aerodns.data.dns.DnsSecurityMessages
 import com.vmcsoft.aerodns.domain.model.ConnectionState
+import com.vmcsoft.aerodns.domain.model.DnsHealth
+import com.vmcsoft.aerodns.domain.model.statusText
+import com.vmcsoft.aerodns.domain.model.label
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.presentation.components.CustomDnsDialog
@@ -101,12 +112,28 @@ fun DashboardScreen(
     val serverToEdit by viewModel.serverToEdit.collectAsState()
     val serverToDelete by viewModel.serverToDelete.collectAsState()
     val speedTestState by viewModel.speedTestState.collectAsState()
-    val currentPingMs by viewModel.currentPingMs.collectAsState()
     val dnsServers by viewModel.dnsServers.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
-    val isValidatingDns by viewModel.isValidatingDns.collectAsState()
-    val validationError by viewModel.validationError.collectAsState()
     val selectedProtocol by viewModel.selectedProtocol.collectAsState()
+
+    val context = LocalContext.current
+    // Keep this action only for the current screen instance. A recreated screen may
+    // retain consent, but must not replay an old connection choice automatically.
+    var pendingVpnAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val action = pendingVpnAction
+        pendingVpnAction = null
+        if (result.resultCode == Activity.RESULT_OK && VpnService.prepare(context) == null) action?.invoke()
+    }
+    fun withVpnPermission(action: () -> Unit) {
+        val intent = VpnService.prepare(context)
+        if (intent == null) action() else {
+            pendingVpnAction = action
+            vpnPermissionLauncher.launch(intent)
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(errorMessage) {
@@ -149,15 +176,12 @@ fun DashboardScreen(
                 ) {
                     ConnectionPanel(
                         connectionState = connectionState,
-                        selectedServer = selectedServer,
-                        currentPingMs = currentPingMs,
-                        onConnectToggle = viewModel::onConnectToggle
-                    )
-
-                    ValidationMessage(
-                        isValidatingDns = isValidatingDns,
-                        validationError = validationError,
-                        onClearValidationError = viewModel::clearValidationError
+                        selectedProtocol = selectedProtocol,
+                        onConnectToggle = {
+                            if (connectionState is ConnectionState.Disconnected || connectionState is ConnectionState.Error) {
+                                withVpnPermission(viewModel::onConnectToggle)
+                            } else viewModel.onConnectToggle()
+                        }
                     )
 
                     selectedServer?.let { server ->
@@ -177,6 +201,7 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 ActionButtons(
+                    speedTestEnabled = (connectionState as? ConnectionState.Connected)?.controlPolicy?.systemManaged != true,
                     onShowSpeedTest = viewModel::onShowSpeedTest,
                     onShowDnsSelector = viewModel::onShowDnsSelector
                 )
@@ -203,8 +228,10 @@ fun DashboardScreen(
                     state = speedTestState,
                     onDismiss = { viewModel.onDismissSpeedTest() },
                     onSelectDns = { result ->
-                        viewModel.onSelectAndConnectDns(result.server)
-                        viewModel.onDismissSpeedTest()
+                        withVpnPermission {
+                            viewModel.onSpeedTestResultSelected(result)
+                            viewModel.onDismissSpeedTest()
+                        }
                     },
                     onRetest = {
                         viewModel.onShowSpeedTest()
@@ -255,19 +282,6 @@ fun DashboardScreen(
                 )
             }
 
-            if (validationError == DnsSecurityMessages.UNTRUSTED_CERTIFICATE) {
-                AlertDialog(
-                    onDismissRequest = { viewModel.clearValidationError() },
-                    title = { Text("Certificate blocked") },
-                    text = { Text(DnsSecurityMessages.UNTRUSTED_CERTIFICATE) },
-                    confirmButton = {
-                        TextButton(onClick = { viewModel.clearValidationError() }) {
-                            Text("OK")
-                        }
-                    }
-                )
-            }
-
             serverToDelete?.let { server ->
                 AlertDialog(
                     onDismissRequest = { viewModel.onDismissDeleteConfirmation() },
@@ -300,13 +314,15 @@ fun DashboardScreen(
 @Composable
 private fun ConnectionPanel(
     connectionState: ConnectionState,
-    selectedServer: DnsServer?,
-    currentPingMs: Long?,
+    selectedProtocol: DnsProtocol,
     onConnectToggle: () -> Unit
 ) {
     val isConnectingOrDisconnecting = connectionState is ConnectionState.Connecting ||
         connectionState is ConnectionState.Disconnecting
     val isConnected = connectionState is ConnectionState.Connected
+    val connected = connectionState as? ConnectionState.Connected
+    val systemManaged = connected?.controlPolicy?.systemManaged == true
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -335,9 +351,32 @@ private fun ConnectionPanel(
             )
         }
 
+        connected?.activeConfig?.let { config ->
+            Text(text = config.displayName, color = TextGray, textAlign = TextAlign.Center)
+        }
+        if (systemManaged) {
+            Text(
+                text = if (connected?.controlPolicy?.isKnown == false)
+                    "Android VPN settings could not be read. Open VPN settings to manage this connection."
+                else if (connected?.controlPolicy?.lockdown == true)
+                    "AeroDNS changes DNS only. Turn off ‘Block connections without VPN’ in Android VPN settings to let other apps use the internet."
+                else "Always-on VPN is controlled by Android. Turn it off in VPN settings to disconnect or run a speed test.",
+                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
+            )
+            TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }) { Text("VPN settings") }
+        }
+        if (connected?.dnsHealth is DnsHealth.Unhealthy) {
+            Text(
+                text = if (systemManaged) "VPN is on. DNS checks will retry automatically. You can choose another resolver."
+                    else "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
+                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
+            )
+        }
+
         ConnectButton(
             isConnected = isConnected,
             isBusy = isConnectingOrDisconnecting,
+            enabled = !systemManaged,
             onClick = onConnectToggle
         )
 
@@ -346,12 +385,12 @@ private fun ConnectionPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             MiniMetric(
-                label = "Protocol",
-                value = if (selectedServer?.dohUrl != null) "DoH ready" else "Standard"
+                label = if (connected == null) "Selected protocol" else "Protocol",
+                value = (connected?.activeConfig?.protocol ?: selectedProtocol).label
             )
             MiniMetric(
-                label = "Latency",
-                value = currentPingMs?.let { "${it}ms" } ?: "--"
+                label = "DNS latency",
+                value = (connected?.dnsHealth as? DnsHealth.Healthy)?.latencyMs?.let { "${it}ms" } ?: "--"
             )
         }
     }
@@ -387,6 +426,7 @@ private fun MiniMetric(
 private fun ConnectButton(
     isConnected: Boolean,
     isBusy: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "connect_button")
@@ -430,7 +470,8 @@ private fun ConnectButton(
                 .size(148.dp)
                 .clip(CircleShape)
                 .background(if (isConnected) connectedButtonBrush() else AeroGradient)
-                .pointerInput(isBusy) {
+                .semantics(mergeDescendants = true) { if (!enabled) disabled() }
+                .pointerInput(isBusy, enabled) {
                     detectTapGestures(
                         onPress = {
                             isPressed = true
@@ -438,7 +479,7 @@ private fun ConnectButton(
                             isPressed = false
                         },
                         onTap = {
-                            if (!isBusy) onClick()
+                            if (!isBusy && enabled) onClick()
                         }
                     )
                 },
@@ -456,60 +497,6 @@ private fun ConnectButton(
                     contentDescription = "Connect/Disconnect",
                     modifier = Modifier.size(70.dp),
                     tint = Color.White
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ValidationMessage(
-    isValidatingDns: Boolean,
-    validationError: String?,
-    onClearValidationError: () -> Unit
-) {
-    if (!isValidatingDns && validationError == null) return
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = if (validationError == null) {
-            AeroCyan.copy(alpha = 0.12f)
-        } else {
-            StatusDisconnected.copy(alpha = 0.12f)
-        },
-        border = BorderStroke(
-            1.dp,
-            if (validationError == null) AeroCyan.copy(alpha = 0.36f) else StatusDisconnected.copy(alpha = 0.36f)
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isValidatingDns) {
-                Material2CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = AeroCyan
-                )
-                Text(
-                    text = "Testing DNS connectivity...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = AeroCyan
-                )
-            }
-            validationError?.let { error ->
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectTapGestures { onClearValidationError() }
-                    }
                 )
             }
         }
@@ -539,7 +526,7 @@ private fun DnsConfigPanel(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "DNS Server",
+                    text = "Selected DNS server",
                     style = MaterialTheme.typography.labelMedium,
                     color = TextGray,
                     textAlign = TextAlign.Center
@@ -672,6 +659,7 @@ private fun InfoRow(
 
 @Composable
 private fun ActionButtons(
+    speedTestEnabled: Boolean,
     onShowSpeedTest: () -> Unit,
     onShowDnsSelector: () -> Unit
 ) {
@@ -681,6 +669,7 @@ private fun ActionButtons(
     ) {
         ElevatedButton(
             onClick = onShowSpeedTest,
+            enabled = speedTestEnabled,
             modifier = Modifier
                 .weight(1f)
                 .height(54.dp),
@@ -790,7 +779,7 @@ private fun DnsProtocol.displayName(): String {
 @Composable
 private fun getStatusText(state: ConnectionState): String {
     return when (state) {
-        is ConnectionState.Connected -> "Connected"
+        is ConnectionState.Connected -> state.controlPolicy.statusText(state.dnsHealth)
         is ConnectionState.Connecting -> "Connecting..."
         is ConnectionState.Disconnected -> "Disconnected"
         is ConnectionState.Disconnecting -> "Disconnecting..."
@@ -801,7 +790,11 @@ private fun getStatusText(state: ConnectionState): String {
 @Composable
 private fun getStatusColor(state: ConnectionState): Color {
     return when (state) {
-        is ConnectionState.Connected -> ActiveButtonCyan
+        is ConnectionState.Connected -> if (state.controlPolicy.lockdown || !state.controlPolicy.isKnown) StatusDisconnected else when (state.dnsHealth) {
+            is DnsHealth.Healthy -> ActiveButtonCyan
+            DnsHealth.Checking -> MaterialTheme.colorScheme.primary
+            is DnsHealth.Unhealthy -> StatusDisconnected
+        }
         is ConnectionState.Connecting -> MaterialTheme.colorScheme.primary
         is ConnectionState.Disconnected -> TextGray
         is ConnectionState.Disconnecting -> MaterialTheme.colorScheme.primary

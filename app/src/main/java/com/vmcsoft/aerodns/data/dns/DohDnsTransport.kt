@@ -1,7 +1,10 @@
 package com.vmcsoft.aerodns.data.dns
 
+import android.net.Network
+import com.vmcsoft.aerodns.data.io.cancellableIo
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
@@ -13,6 +16,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okio.Buffer
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -26,19 +30,21 @@ import javax.net.SocketFactory
 import javax.net.ssl.SSLException
 
 @Singleton
-class DohDnsTransport @Inject constructor() {
+class DohDnsTransport @Inject constructor(
+    private val endpointResolver: DohEndpointResolver
+) {
 
     var socketProtector: DnsSocketProtector = NoopDnsSocketProtector
 
     internal var callFactoryBuilder: (
-        upstreamAddresses: List<String>,
+        endpoint: DohEndpoint,
         timeoutMs: Int,
         socketProtector: DnsSocketProtector
     ) -> Call.Factory = ::buildCallFactory
 
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO
     private val overallTimeoutMs: Long = 5000L
-    private val callFactoryCache = mutableMapOf<CallFactoryCacheKey, Call.Factory>()
+    private val callFactoryCache = LinkedHashMap<CallFactoryCacheKey, OkHttpClient>(8, 0.75f, true)
 
     suspend fun query(
         payload: ByteArray,
@@ -57,9 +63,7 @@ class DohDnsTransport @Inject constructor() {
                     }
 
                     val bootstrapAddresses = buildBootstrapAddresses(upstreamAddresses, customBootstrapIp)
-                    if (bootstrapAddresses.isEmpty()) {
-                        return@withTimeout DnsTransportResult.Error("No DoH bootstrap addresses configured")
-                    }
+                    val endpoint = endpointResolver.resolve(url.host, bootstrapAddresses)
 
                     DnsDiagnosticLog.d(
                         TAG,
@@ -76,25 +80,26 @@ class DohDnsTransport @Inject constructor() {
 
                     val startTime = System.nanoTime()
                     val callFactory = if (allowUntrustedCertificates) {
-                        CustomDohUnsafeClientFactory.build(
-                            upstreamAddresses = bootstrapAddresses,
+                        cachedCallFactory(
+                            endpoint = endpoint,
                             timeoutMs = timeoutMs,
                             socketProtector = socketProtector,
-                            customBootstrapIp = customBootstrapIp
+                            allowUntrustedCertificates = true
                         )
                     } else {
-                        callFactoryBuilder(bootstrapAddresses, timeoutMs, socketProtector)
+                        callFactoryBuilder(endpoint, timeoutMs, socketProtector)
                     }
-                    callFactory
-                        .newCall(request)
-                        .execute()
-                        .use { response ->
-                            response.toDnsTransportResult(startTime)
-                        }
+                    val call = callFactory.newCall(request)
+                    cancellableIo(cancel = { call.cancel() }) {
+                        // Keep cancellation attached through body consumption as well as headers.
+                        call.execute().use { response -> response.toDnsTransportResult(startTime) }
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=overall timeoutMs=$overallTimeoutMs")
                 DnsTransportResult.Timeout
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: SocketTimeoutException) {
                 DnsDiagnosticLog.w(TAG, "doh_query_timeout kind=socket message=${e.message}")
                 DnsTransportResult.Timeout
@@ -117,21 +122,47 @@ class DohDnsTransport @Inject constructor() {
         }
     }
 
-    private fun buildCallFactory(
-        upstreamAddresses: List<String>,
+    internal fun buildCallFactory(
+        endpoint: DohEndpoint,
         timeoutMs: Int,
         socketProtector: DnsSocketProtector
-    ): Call.Factory {
+    ): Call.Factory = cachedCallFactory(endpoint, timeoutMs, socketProtector, false)
+
+    internal fun cachedCallFactory(
+        endpoint: DohEndpoint,
+        timeoutMs: Int,
+        socketProtector: DnsSocketProtector,
+        allowUntrustedCertificates: Boolean
+    ): OkHttpClient {
         val key = CallFactoryCacheKey(
-            upstreamAddresses = upstreamAddresses,
+            endpoint = endpoint,
             timeoutMs = timeoutMs,
-            socketProtector = socketProtector
+            socketProtector = socketProtector,
+            allowUntrustedCertificates = allowUntrustedCertificates
         )
         return synchronized(callFactoryCache) {
-            callFactoryCache.getOrPut(key) {
+            // Do not retain pooled connections for an old network or an old answer.
+            val obsolete = callFactoryCache.keys.filter {
+                it.endpoint.hostname == endpoint.hostname &&
+                    (it.endpoint != endpoint || it.socketProtector != socketProtector)
+            }
+            obsolete.forEach { oldKey ->
+                callFactoryCache.remove(oldKey)?.connectionPool?.evictAll()
+            }
+            callFactoryCache[key]?.let { return@synchronized it }
+            // A profile/timeout sweep must not retain an unbounded set of pools.
+            if (callFactoryCache.size >= MAX_CACHED_CLIENTS) {
+                val oldest = callFactoryCache.keys.first()
+                callFactoryCache.remove(oldest)?.connectionPool?.evictAll()
+            }
+            // Certificate policy is part of the key. Never reuse an opted-in TLS
+            // connection for a request that requires normal certificate validation.
+            val client = if (allowUntrustedCertificates) {
+                CustomDohUnsafeClientFactory.build(endpoint, timeoutMs, socketProtector)
+            } else {
                 OkHttpClient.Builder()
-                    .dns(CustomDohBootstrapDns(null, upstreamAddresses))
-                    .socketFactory(ProtectedSocketFactory(socketProtector))
+                    .dns(CustomDohBootstrapDns(endpoint))
+                    .socketFactory(ProtectedSocketFactory(socketProtector, endpoint.network))
                     .connectTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
                     .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
                     .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
@@ -141,6 +172,8 @@ class DohDnsTransport @Inject constructor() {
                     .followSslRedirects(false)
                     .build()
             }
+            callFactoryCache[key] = client
+            client
         }
     }
 
@@ -150,11 +183,28 @@ class DohDnsTransport @Inject constructor() {
             return DnsTransportResult.Error("DoH request failed with HTTP $code")
         }
 
-        val responsePayload = body?.bytes()
-            ?: return DnsTransportResult.Error("Empty DoH response body")
-        if (responsePayload.isEmpty() || responsePayload.size > MAX_DNS_RESPONSE_SIZE) {
-            return DnsTransportResult.Error("Invalid DoH response size: ${responsePayload.size}")
+        val responseBody = body ?: return DnsTransportResult.Error("Empty DoH response body")
+        val mediaType = responseBody.contentType()
+        if (mediaType?.type != "application" || mediaType.subtype != "dns-message") {
+            return DnsTransportResult.Error("Invalid DoH response content type")
         }
+        val declaredLength = responseBody.contentLength()
+        if (declaredLength == 0L || declaredLength > MAX_DNS_RESPONSE_SIZE) {
+            return DnsTransportResult.Error("Invalid DoH response size: $declaredLength")
+        }
+
+        // Content-Length may be missing or dishonest. Read at most the wire limit
+        // plus one byte, rather than allocating the entire remote body first.
+        val buffer = Buffer()
+        val source = responseBody.source()
+        while (buffer.size <= MAX_DNS_RESPONSE_SIZE) {
+            if (source.read(buffer, MAX_DNS_RESPONSE_SIZE + 1L - buffer.size) == -1L) break
+        }
+        if (buffer.size == 0L || buffer.size > MAX_DNS_RESPONSE_SIZE ||
+            (declaredLength >= 0 && declaredLength != buffer.size)) {
+            return DnsTransportResult.Error("Invalid DoH response size: ${buffer.size}")
+        }
+        val responsePayload = buffer.readByteArray()
 
         val latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)
         DnsDiagnosticLog.d(
@@ -183,7 +233,8 @@ class DohDnsTransport @Inject constructor() {
     }
 
     internal class ProtectedSocketFactory(
-        private val socketProtector: DnsSocketProtector
+        private val socketProtector: DnsSocketProtector,
+        private val network: Network? = null
     ) : SocketFactory() {
         override fun createSocket(): Socket {
             return createProtectedSocket()
@@ -229,6 +280,7 @@ class DohDnsTransport @Inject constructor() {
                     if (!socketProtector.protect(socket)) {
                         throw IOException("Failed to protect DNS HTTPS socket from VPN")
                     }
+                    network?.bindSocket(socket)
                     DnsDiagnosticLog.d(TAG, "doh_socket_protected bound=${socket.isBound}")
                 } catch (e: IOException) {
                     socket.close()
@@ -244,11 +296,13 @@ class DohDnsTransport @Inject constructor() {
         private const val DNS_MESSAGE_CONTENT_TYPE = "application/dns-message"
         private val DNS_MESSAGE_MEDIA_TYPE = DNS_MESSAGE_CONTENT_TYPE.toMediaType()
         private const val MAX_DNS_RESPONSE_SIZE = 65_535
+        private const val MAX_CACHED_CLIENTS = 8
     }
 
     private data class CallFactoryCacheKey(
-        val upstreamAddresses: List<String>,
+        val endpoint: DohEndpoint,
         val timeoutMs: Int,
-        val socketProtector: DnsSocketProtector
+        val socketProtector: DnsSocketProtector,
+        val allowUntrustedCertificates: Boolean
     )
 }

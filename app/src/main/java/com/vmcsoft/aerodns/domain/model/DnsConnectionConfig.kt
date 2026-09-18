@@ -21,32 +21,14 @@ data class DnsConnectionConfig(
     val enableExperimentalPacketLoop: Boolean = false
 ) : Serializable
 
-private val DEFAULT_DUAL_STACK_IPV6_FALLBACK = listOf(
-    "2606:4700:4700::1111",
-    "2606:4700:4700::1001"
-)
-
-private val DEFAULT_DOH_BOOTSTRAP_ADDRESSES = listOf(
-    "1.1.1.1",
-    "1.0.0.1",
-    "2606:4700:4700::1111",
-    "2606:4700:4700::1001"
-)
-
 fun buildDnsConnectionConfig(
     server: DnsServer,
     stack: NetworkIpStack,
-    protocol: DnsProtocol = DnsProtocol.STANDARD,
-    dualStackIpv6Fallback: List<String> = DEFAULT_DUAL_STACK_IPV6_FALLBACK,
-    dohBootstrapFallback: List<String> = DEFAULT_DOH_BOOTSTRAP_ADDRESSES
+    protocol: DnsProtocol = DnsProtocol.STANDARD
 ): Result<DnsConnectionConfig> {
-    val orderedAddresses = buildOrderedAddresses(
-        server = server,
-        stack = stack,
-        protocol = protocol,
-        dualStackIpv6Fallback = dualStackIpv6Fallback,
-        dohBootstrapFallback = dohBootstrapFallback
-    )
+    // These are addresses of the selected resolver, never fallback DNS providers.
+    // An empty DoH list means its endpoint must be discovered on an underlying network.
+    val orderedAddresses = getOrderedDnsAddresses(server, stack)
 
     return when (protocol) {
         DnsProtocol.STANDARD -> {
@@ -93,31 +75,3 @@ fun buildDnsConnectionConfig(
         }
     }
 }
-
-private fun buildOrderedAddresses(
-    server: DnsServer,
-    stack: NetworkIpStack,
-    protocol: DnsProtocol,
-    dualStackIpv6Fallback: List<String>,
-    dohBootstrapFallback: List<String>
-): List<String> {
-    val orderedAddresses = getOrderedDnsAddresses(server, stack)
-    if (protocol == DnsProtocol.DOH) {
-        return orderedAddresses.ifEmpty { dohBootstrapFallback }
-    }
-    if (protocol == DnsProtocol.DOT) {
-        return orderedAddresses
-    }
-
-    return if (
-        stack == NetworkIpStack.DUAL_STACK &&
-        orderedAddresses.isNotEmpty() &&
-        orderedAddresses.none { it.isIpv6Address() }
-    ) {
-        orderedAddresses + dualStackIpv6Fallback
-    } else {
-        orderedAddresses
-    }
-}
-
-private fun String.isIpv6Address(): Boolean = contains(':')

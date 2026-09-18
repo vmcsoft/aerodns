@@ -33,7 +33,7 @@ class RunSpeedTestUseCaseTest {
         coEvery { networkCapabilitiesRepository.getActiveNetworkIpStack() } returns NetworkIpStack.IPv4_ONLY
 
         val useCase = RunSpeedTestUseCase(dnsRepository, networkPinger, networkCapabilitiesRepository)
-        val results = useCase()
+        val results = useCase(DnsProtocol.STANDARD)
 
         assertEquals(2, results.size)
         assertEquals("cloudflare", results[0].server.id)
@@ -43,7 +43,7 @@ class RunSpeedTestUseCaseTest {
     }
 
     @Test
-    fun `prefers IPv4 on dual stack when IPv4 is available`() = runTest {
+    fun `uses the connection IPv6 first ordering on dual stack`() = runTest {
         val cloudflare = DnsServer(
             id = "cloudflare",
             name = "Cloudflare",
@@ -58,21 +58,21 @@ class RunSpeedTestUseCaseTest {
 
         val networkPinger = mockk<NetworkPinger>()
         coEvery {
-            networkPinger.measureDnsQueryLatency("1.1.1.1", any(), any())
+            networkPinger.measureDnsQueryLatency("2606:4700:4700::1111", any(), any())
         } returns PingResult.Success(18)
 
         val networkCapabilitiesRepository = mockk<NetworkCapabilitiesRepository>()
         coEvery { networkCapabilitiesRepository.getActiveNetworkIpStack() } returns NetworkIpStack.DUAL_STACK
 
         val useCase = RunSpeedTestUseCase(dnsRepository, networkPinger, networkCapabilitiesRepository)
-        val results = useCase()
+        val results = useCase(DnsProtocol.STANDARD)
 
         assertEquals(1, results.size)
         assertEquals(true, results[0].isReachable)
         assertEquals(18L, results[0].averageLatencyMs)
-        assertEquals("1.1.1.1", results[0].testedAddress)
+        assertEquals("2606:4700:4700::1111", results[0].testedAddress)
         coVerify(exactly = 0) {
-            networkPinger.measureDnsQueryLatency("2606:4700:4700::1111", any(), any())
+            networkPinger.measureDnsQueryLatency("1.1.1.1", any(), any())
         }
         coVerify(exactly = 0) {
             networkPinger.measureDnsQueryLatency("2606:4700:4700::1001", any(), any())
@@ -101,7 +101,7 @@ class RunSpeedTestUseCaseTest {
 
         val useCase = RunSpeedTestUseCase(dnsRepository, networkPinger, networkCapabilitiesRepository)
         val progressResults = mutableListOf<String>()
-        val results = useCase { completed, total, result ->
+        val results = useCase(DnsProtocol.STANDARD) { completed, total, result ->
             assertEquals(2, total)
             assertEquals(true, completed in 1..2)
             progressResults.add(result.server.id)
@@ -114,7 +114,7 @@ class RunSpeedTestUseCaseTest {
     }
 
     @Test
-    fun `tests custom DoH only DNS servers with bootstrap fallback`() = runTest {
+    fun `tests custom DoH only DNS servers using endpoint discovery`() = runTest {
         val customDoh = DnsServer(
             id = "custom-doh",
             name = "Custom DoH",
@@ -136,7 +136,7 @@ class RunSpeedTestUseCaseTest {
         coEvery { networkCapabilitiesRepository.getActiveNetworkIpStack() } returns NetworkIpStack.IPv4_ONLY
 
         val useCase = RunSpeedTestUseCase(dnsRepository, networkPinger, networkCapabilitiesRepository)
-        val results = useCase()
+        val results = useCase(DnsProtocol.DOH)
 
         assertEquals(1, results.size)
         assertEquals(true, results[0].isReachable)

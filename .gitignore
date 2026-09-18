@@ -126,3 +126,7 @@ Desktop.ini
 # Misc
 *.orig
 .vscode/
+
+# Python test fixtures
+__pycache__/
+*.py[cod]

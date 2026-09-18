@@ -3,6 +3,7 @@ package com.vmcsoft.aerodns.data.vpn.packet
 import com.vmcsoft.aerodns.data.diagnostics.DnsDiagnosticLog
 import com.vmcsoft.aerodns.data.dns.DnsForwarder
 import com.vmcsoft.aerodns.data.dns.DnsTransportResult
+import com.vmcsoft.aerodns.data.dns.DnsWireMessage
 import com.vmcsoft.aerodns.domain.model.DnsConnectionConfig
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,6 +26,8 @@ class TunDnsPacketHandler @Inject constructor(
             return null
         }
 
+        if (!DnsWireMessage.isQuery(query.payload)) return null
+
         DnsDiagnosticLog.d(
             TAG,
             "packet_handler_query src=${formatIpv4(query.sourceAddress)}:${query.sourcePort} " +
@@ -34,6 +37,13 @@ class TunDnsPacketHandler @Inject constructor(
         )
         return when (val result = dnsForwarder.forward(query.payload, config, timeoutMs)) {
             is DnsTransportResult.Success -> {
+                // No fragmentation or TCP listener exists in this TUN path. Reject an
+                // unrepresentable reply without truncating it or stopping later queries.
+                if (!Ipv4UdpDnsPacketCodec.canFrameResponse(result.payload.size) ||
+                    !DnsWireMessage.isResponseForQuery(result.payload, query.payload)) {
+                    DnsDiagnosticLog.w(TAG, "packet_handler_dropped_invalid_response bytes=${result.payload.size}")
+                    return null
+                }
                 DnsDiagnosticLog.d(
                     TAG,
                     "packet_handler_forward_success txid=${readDnsTransactionId(query.payload)} " +

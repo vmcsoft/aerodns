@@ -50,7 +50,7 @@ class DnsConnectionConfigTest {
     }
 
     @Test
-    fun `standard config appends IPv6 fallback for IPv4-only custom DNS on dual stack`() {
+    fun `standard config preserves IPv4-only custom resolver on dual stack`() {
         val server = DnsServer(
             id = "custom",
             name = "Custom",
@@ -60,13 +60,12 @@ class DnsConnectionConfigTest {
 
         val result = buildDnsConnectionConfig(
             server = server,
-            stack = NetworkIpStack.DUAL_STACK,
-            dualStackIpv6Fallback = listOf("2001:db8::1", "2001:db8::2")
+            stack = NetworkIpStack.DUAL_STACK
         )
 
         assertTrue(result.isSuccess)
         assertEquals(
-            listOf("192.0.2.1", "2001:db8::1", "2001:db8::2"),
+            listOf("192.0.2.1"),
             result.getOrThrow().upstreamAddresses
         )
     }
@@ -106,7 +105,7 @@ class DnsConnectionConfigTest {
     }
 
     @Test
-    fun `DoH config uses fallback bootstrap when server has no addresses`() {
+    fun `URL-only DoH leaves endpoint discovery to the underlying network`() {
         val server = DnsServer(
             id = "custom-doh",
             name = "Custom DoH",
@@ -118,12 +117,11 @@ class DnsConnectionConfigTest {
         val result = buildDnsConnectionConfig(
             server = server,
             stack = NetworkIpStack.IPv4_ONLY,
-            protocol = DnsProtocol.DOH,
-            dohBootstrapFallback = listOf("9.9.9.9")
+            protocol = DnsProtocol.DOH
         )
 
         assertTrue(result.isSuccess)
-        assertEquals(listOf("9.9.9.9"), result.getOrThrow().upstreamAddresses)
+        assertTrue(result.getOrThrow().upstreamAddresses.isEmpty())
     }
 
     @Test

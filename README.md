@@ -16,13 +16,20 @@
 
 AeroDNS changes the device DNS resolver through Android's `VpnService` API. It is designed to route only DNS traffic, keeping ordinary application traffic on the device's underlying network.
 
+## Install
+
+Get the maintained app from [Google Play](https://play.google.com/store/apps/details?id=com.vmcsoft.aerodns).
+The source on `main` may be ahead of the version available to your device; see the
+[changelog](CHANGELOG.md) for version history. GitHub CI retains validation reports;
+it does not distribute signed app updates.
+
 ## Features
 
 - One-tap DNS connect and disconnect
 - Standard DNS and DNS-over-HTTPS (DoH)
 - Built-in Cloudflare, Google, AdGuard, OpenDNS, and Quad9 profiles
 - Custom IPv4, IPv6, and DoH resolvers
-- Parallel DNS latency testing
+- Parallel DNS latency testing for the selected protocol
 - Quick Settings tile
 - Automatic recovery after network changes
 - OLED-friendly Jetpack Compose interface
@@ -39,12 +46,37 @@ For DoH, the app exposes a virtual DNS address at `10.0.0.1`, routes only that a
 
 See [Architecture](docs/ARCHITECTURE.md) for the technical model and current protocol limitations.
 
+## Connection status and limits
+
+- **Checking DNS…** means Android has established the interface and a DNS check is running.
+- **Connected** means the latest check succeeded through the selected DNS path.
+- **DNS check failed** keeps the VPN in place so a later check can recover. You can
+  choose another resolver or disconnect when Always-on is off.
+
+Checks query `example.com` on connection and again 30 seconds after each result.
+They show sampled resolver health, not a guarantee that every domain or app works.
+Filtering that domain can make a working resolver fail the check.
+
+The DoH packet loop supports IPv4 UDP DNS; TCP DNS and IPv6 DNS packets inside the
+loop are not implemented. Apps using their own DNS may bypass Android's selected
+resolver. Android Private DNS, manufacturer firmware and network conditions can
+affect behavior. See [Testing](docs/TESTING.md) for the validation scope.
+
+## Always-on VPN
+
+When Android Always-on VPN is selected, turn it off in Android VPN settings before
+disconnecting or running a speed test. You can still choose another DNS resolver.
+Leave **Block connections without VPN** off: AeroDNS routes DNS only, so this Android
+option blocks ordinary app traffic. If AeroDNS cannot read the Android VPN settings,
+it directs you there to manage the connection. Android 7–9 compatibility uses system
+settings that may differ on manufacturer builds; broader device validation remains open.
+
 ## Build from source
 
 Requirements:
 
 - JDK 17
-- Android SDK Platform 36.1
+- Android SDK Platform 36.1 and Build Tools 36.0.0
 - Android Studio or the included Gradle wrapper
 
 ```bash
@@ -59,6 +91,10 @@ Install a connected-device build:
 ./gradlew installDebug
 ```
 
+This uses the production application ID with a debug key and cannot update the
+Play-signed installation. Use the [isolated validation package](docs/TESTING.md#isolated-validation-package)
+to keep a development build alongside the Play app without removing its data.
+
 Run the local test suite:
 
 ```bash
@@ -69,7 +105,10 @@ More validation scenarios are documented in [Testing](docs/TESTING.md).
 
 ## Security and privacy
 
-AeroDNS does not operate a backend and does not collect telemetry. DNS queries are sent directly to the resolver selected by the user. Read [PRIVACY.md](PRIVACY.md) for the complete data-flow summary.
+AeroDNS does not operate a backend or upload telemetry. Connected DNS traffic and
+health checks use the selected resolver; speed tests contact the providers being
+measured. Custom DoH endpoint discovery can use the underlying network's DNS.
+Read [PRIVACY.md](PRIVACY.md) for the complete data-flow summary.
 
 Custom DoH profiles include an advanced, opt-in certificate-verification override for resolvers that cannot use Android's normal trust store. It is disabled by default, isolated from built-in providers, and exposes DNS traffic to interception when enabled. See [SECURITY.md](SECURITY.md) before using or modifying this feature.
 

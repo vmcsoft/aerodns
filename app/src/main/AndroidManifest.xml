@@ -46,6 +46,11 @@
                 android:value="vpn" />
         </service>
 
+        <!-- Started only while the foreground VPN owns an active recovery record. -->
+        <service
+            android:name=".data.vpn.VpnRecoveryService"
+            android:exported="false" />
+
         <!-- Quick Settings Tile -->
         <service
             android:name=".presentation.tile.DnsTileService"

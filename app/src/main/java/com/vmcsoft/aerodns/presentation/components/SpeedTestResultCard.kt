@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
@@ -15,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.vmcsoft.aerodns.domain.model.SpeedTestResult
+import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.presentation.theme.AeroCyan
 import com.vmcsoft.aerodns.presentation.theme.AeroOrange
 import com.vmcsoft.aerodns.presentation.theme.StatusConnected
@@ -46,11 +48,20 @@ fun SpeedTestResultCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = result.server.name,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(result.server.name, style = MaterialTheme.typography.titleMedium)
+                val protocol = when (result.testedProtocol) {
+                    DnsProtocol.DOH -> "DoH"
+                    DnsProtocol.STANDARD -> "Standard (UDP)"
+                    DnsProtocol.DOT -> "DoT"
+                }
+                Text(protocol, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = result.failureReason ?: "${result.sampleCount}/${result.plannedSampleCount} replies" +
+                        if (result.timedOut) " · Time limit reached" else if (result.sampleCount < result.plannedSampleCount) " · Partial" else "",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
             Text(
                 text = if (result.isReachable) "${result.averageLatencyMs}ms" else "N/A",
