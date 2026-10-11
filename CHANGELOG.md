@@ -11,6 +11,7 @@ Notable changes to AeroDNS are recorded here.
   and speed testing; preserve newer user choices when a test finishes.
 - Bound DoH forwarding work and response sizes, and recover after failed DNS checks.
 - Improve long-text layouts, VPN consent retry and Always-on VPN controls.
+
 ### Source maintenance after release
 
 - Expand regression fixtures and contributor guidance; validate minified release
