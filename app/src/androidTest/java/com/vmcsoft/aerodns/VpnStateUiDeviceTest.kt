@@ -21,6 +21,7 @@ import com.vmcsoft.aerodns.data.dns.DohDnsTransport
 import com.vmcsoft.aerodns.data.dns.DohEndpointResolver
 import com.vmcsoft.aerodns.data.dns.DnsWireMessage
 import com.vmcsoft.aerodns.data.dns.DnsTransportResult
+import com.vmcsoft.aerodns.data.local.PreferencesDataStore
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
@@ -122,6 +123,28 @@ class VpnStateUiDeviceTest {
         await { tileDescription() == "Tap to connect" }
         shell("cmd statusbar collapse")
         assertDashboard("Disconnected")
+        // The next tap should use the local fixture, independent of saved selections.
+        val profile = DnsServer(
+            config.serverId, config.displayName, primary = "",
+            dohUrl = config.dohUrl,
+            customBootstrapIp = config.customBootstrapIp,
+            allowUntrustedCertificates = config.allowUntrustedCertificates,
+            supportedProtocols = listOf(DnsProtocol.DOH),
+            isCustom = true
+        )
+        compose.activityRule.scenario.onActivity { activity ->
+            ViewModelProvider(activity)[DashboardViewModel::class.java].onDnsServerSelected(profile)
+        }
+        val preferences = PreferencesDataStore(context)
+        runBlocking {
+            withTimeout(5000) {
+                while (preferences.getSelectedDnsId() != profile.id ||
+                    preferences.getSelectedDnsProtocol() != DnsProtocol.DOH
+                ) {
+                    delay(50)
+                }
+            }
+        }
         // Exercise the app's touch handler, rather than calling the view model directly.
         compose.onNodeWithContentDescription("Connect/Disconnect").performTouchInput { click() }
         waitState { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy }

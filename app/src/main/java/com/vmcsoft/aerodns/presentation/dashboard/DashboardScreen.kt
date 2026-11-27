@@ -615,6 +615,10 @@ private fun ActionButtons(
                 .weight(1f)
                 .heightIn(min = 52.dp),
             shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                contentColor = MaterialTheme.colorScheme.primary
+            ),
             contentPadding = PaddingValues(horizontal = 12.dp)
         ) {
             Icon(
