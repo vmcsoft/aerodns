@@ -133,10 +133,11 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    private fun loadDnsServers() {
+    private fun loadDnsServers(restoreSelection: Boolean = true) {
         viewModelScope.launch {
             val servers = getDnsListUseCase()
             _dnsServers.value = servers
+            if (!restoreSelection) return@launch
 
             // Load previously selected DNS from DataStore
             val savedDnsId = preferencesDataStore.getSelectedDnsId()
@@ -323,7 +324,7 @@ class DashboardViewModel @Inject constructor(
 
             if (result.isSuccess) {
                 Log.d(TAG, "Custom DNS ${if (serverToEdit != null) "updated" else "saved"}: ${result.getOrNull()?.name}")
-                loadDnsServers()
+                loadDnsServers(restoreSelection = false)
                 _showCustomDnsDialog.value = false
                 _serverToEdit.value = null
                 _errorMessage.value = null
@@ -384,7 +385,7 @@ class DashboardViewModel @Inject constructor(
 
             if (result.isSuccess) {
                 Log.d(TAG, "Custom DNS ${if (serverToEdit != null) "updated" else "saved"}: ${result.getOrNull()?.name}")
-                loadDnsServers()
+                loadDnsServers(restoreSelection = false)
                 _showCustomDnsDialog.value = false
                 _serverToEdit.value = null
                 _errorMessage.value = null
@@ -393,11 +394,7 @@ class DashboardViewModel @Inject constructor(
                 result.getOrNull()?.let { savedServer ->
                     // Update selection to the saved server
                     _selectedServer.value = savedServer
-                    val resolvedProtocol = if (!savedServer.dohUrl.isNullOrBlank()) {
-                        DnsProtocol.DOH
-                    } else {
-                        resolveProtocolForServer(savedServer)
-                    }
+                    val resolvedProtocol = savedServer.resolveSelectedProtocol(protocol)
                     _selectedProtocol.value = resolvedProtocol
                     preferencesDataStore.setSelectedDnsId(savedServer.id)
                     preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)

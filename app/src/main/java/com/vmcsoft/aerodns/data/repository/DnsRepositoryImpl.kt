@@ -35,18 +35,22 @@ class DnsRepositoryImpl @Inject constructor(
             for (i in 0 until jsonArray.length()) {
                 val json = jsonArray.getJSONObject(i)
                 val primary = json.optString("primary", "")
+                val ipv6Primary = json.optString("ipv6Primary").takeIf { it.isNotEmpty() }
                 servers.add(
                     DnsServer(
                         id = json.getString("id"),
                         name = json.getString("name"),
                         primary = primary,
                         secondary = json.optString("secondary").takeIf { it.isNotEmpty() },
-                        ipv6Primary = json.optString("ipv6Primary").takeIf { it.isNotEmpty() },
+                        ipv6Primary = ipv6Primary,
                         ipv6Secondary = json.optString("ipv6Secondary").takeIf { it.isNotEmpty() },
                         dohUrl = json.optString("dohUrl").takeIf { it.isNotEmpty() },
                         customBootstrapIp = json.optString("customBootstrapIp").takeIf { it.isNotEmpty() },
                         allowUntrustedCertificates = json.optBoolean("allowUntrustedCertificates", false),
-                        supportedProtocols = supportedProtocolsFor(json.optString("dohUrl"), primary),
+                        supportedProtocols = supportedProtocolsFor(
+                            json.optString("dohUrl"),
+                            primary.isNotBlank() || !ipv6Primary.isNullOrBlank()
+                        ),
                         isCustom = true
                     )
                 )
@@ -132,11 +136,11 @@ class DnsRepositoryImpl @Inject constructor(
         preferencesDataStore.setCustomDnsJson(jsonArray.toString())
     }
 
-    private fun supportedProtocolsFor(dohUrl: String?, primary: String): List<DnsProtocol> {
+    private fun supportedProtocolsFor(dohUrl: String?, hasStandardAddress: Boolean): List<DnsProtocol> {
         return when {
             dohUrl.isNullOrBlank() -> listOf(DnsProtocol.STANDARD)
-            primary.isBlank() -> listOf(DnsProtocol.DOH)
-            else -> listOf(DnsProtocol.STANDARD, DnsProtocol.DOH)
+            hasStandardAddress -> listOf(DnsProtocol.STANDARD, DnsProtocol.DOH)
+            else -> listOf(DnsProtocol.DOH)
         }
     }
 }

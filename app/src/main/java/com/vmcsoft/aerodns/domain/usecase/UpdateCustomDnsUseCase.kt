@@ -36,79 +36,65 @@ class UpdateCustomDnsUseCase @Inject constructor(
         customBootstrapIp: String? = null,
         allowUntrustedCertificates: Boolean = false
     ): Result<DnsServer> {
-        val normalizedDohUrl = normalizeDohUrl(dohUrl).getOrElse {
-            return Result.failure(it)
-        }
-        val normalizedBootstrapIp = normalizeBootstrapIp(customBootstrapIp).getOrElse {
-            return Result.failure(it)
-        }
-        if (protocol == DnsProtocol.DOH && normalizedDohUrl == null) {
-            return Result.failure(IllegalArgumentException("DoH URL is required"))
-        }
-
-        // Validate primary DNS
-        val normalizedPrimary = primary.trim()
-        val isPrimaryIpv4 = ipv4Regex.matches(normalizedPrimary)
-        val isPrimaryIpv6 = ipv6Regex.matches(normalizedPrimary)
-
-        if (normalizedPrimary.isBlank() && protocol != DnsProtocol.DOH) {
-            return Result.failure(IllegalArgumentException("Invalid primary DNS address"))
-        }
-
-        if (normalizedPrimary.isNotBlank() && !isPrimaryIpv4 && !isPrimaryIpv6) {
-            return Result.failure(IllegalArgumentException("Invalid primary DNS address"))
-        }
-
-        if (normalizedPrimary.isBlank() && !secondary.isNullOrBlank()) {
-            return Result.failure(IllegalArgumentException("Primary bootstrap DNS is required before secondary DNS"))
-        }
-
-        // Validate secondary DNS if provided
-        if (secondary != null && secondary.isNotBlank()) {
-            val isSecondaryIpv4 = ipv4Regex.matches(secondary)
-            val isSecondaryIpv6 = ipv6Regex.matches(secondary)
-
-            if (!isSecondaryIpv4 && !isSecondaryIpv6) {
-                return Result.failure(IllegalArgumentException("Invalid secondary DNS address"))
+        val existing = dnsRepository.getCustomServers().firstOrNull { it.id == serverId }
+            ?: return Result.failure(IllegalArgumentException("Custom DNS profile no longer exists"))
+        val edited = runCatching {
+            when (protocol) {
+                DnsProtocol.STANDARD -> updateStandardAddresses(existing, primary, secondary)
+                DnsProtocol.DOH -> existing.copy(
+                    dohUrl = requireNotNull(normalizeDohUrl(dohUrl).getOrThrow()) {
+                        "DoH URL is required"
+                    },
+                    customBootstrapIp = normalizeBootstrapIp(customBootstrapIp).getOrThrow(),
+                    allowUntrustedCertificates = allowUntrustedCertificates
+                )
+                DnsProtocol.DOT -> throw IllegalArgumentException("Unsupported custom DNS protocol")
             }
-        }
-
-        val supportedProtocols = when {
-            protocol == DnsProtocol.DOH && normalizedPrimary.isBlank() -> listOf(DnsProtocol.DOH)
-            protocol == DnsProtocol.DOH -> listOf(DnsProtocol.STANDARD, DnsProtocol.DOH)
-            else -> listOf(DnsProtocol.STANDARD)
-        }
-
-        val server = if (isPrimaryIpv4) {
-            DnsServer(
-                id = serverId,
-                name = name.ifBlank { "Custom DNS" },
-                primary = normalizedPrimary,
-                secondary = secondary?.takeIf { it.isNotBlank() },
-                dohUrl = normalizedDohUrl,
-                customBootstrapIp = normalizedBootstrapIp,
-                allowUntrustedCertificates = protocol == DnsProtocol.DOH && allowUntrustedCertificates,
-                supportedProtocols = supportedProtocols,
-                isCustom = true
-            )
-        } else {
-            // IPv6
-            DnsServer(
-                id = serverId,
-                name = name.ifBlank { "Custom DNS" },
-                primary = "", // Empty IPv4
-                ipv6Primary = normalizedPrimary.takeIf { it.isNotBlank() },
-                ipv6Secondary = secondary?.takeIf { it.isNotBlank() },
-                dohUrl = normalizedDohUrl,
-                customBootstrapIp = normalizedBootstrapIp,
-                allowUntrustedCertificates = protocol == DnsProtocol.DOH && allowUntrustedCertificates,
-                supportedProtocols = supportedProtocols,
-                isCustom = true
-            )
-        }
+        }.getOrElse { return Result.failure(it) }
+        val server = edited.copy(
+            name = name.ifBlank { "Custom DNS" },
+            supportedProtocols = (existing.supportedProtocols + protocol).distinct().sorted()
+        )
 
         dnsRepository.updateCustomServer(server)
         return Result.success(server)
+    }
+
+    private fun updateStandardAddresses(
+        server: DnsServer,
+        primary: String,
+        secondary: String?
+    ): DnsServer {
+        val newPrimary = primary.trim()
+        val newSecondary = secondary?.trim()?.takeIf(String::isNotEmpty)
+        val useIpv4 = ipv4Regex.matches(newPrimary)
+        require(useIpv4 || ipv6Regex.matches(newPrimary)) { "Invalid primary DNS address" }
+        require(newSecondary == null || ipv4Regex.matches(newSecondary) || ipv6Regex.matches(newSecondary)) {
+            "Invalid secondary DNS address"
+        }
+
+        // The editor shows the pair with an IPv4 primary first, or the IPv6 pair otherwise.
+        val editingIpv4 = server.primary.isNotBlank()
+        val editingIpv6 = !editingIpv4 && !server.ipv6Primary.isNullOrBlank()
+        require(!(editingIpv4 && !useIpv4 &&
+            (!server.ipv6Primary.isNullOrBlank() || !server.ipv6Secondary.isNullOrBlank()))) {
+            "An IPv6 address is already saved. Enter an IPv4 primary to preserve it."
+        }
+        return if (useIpv4) {
+            server.copy(
+                primary = newPrimary,
+                secondary = newSecondary,
+                ipv6Primary = server.ipv6Primary.takeUnless { editingIpv6 },
+                ipv6Secondary = server.ipv6Secondary.takeUnless { editingIpv6 }
+            )
+        } else {
+            server.copy(
+                primary = if (editingIpv4) "" else server.primary,
+                secondary = server.secondary.takeUnless { editingIpv4 },
+                ipv6Primary = newPrimary,
+                ipv6Secondary = newSecondary
+            )
+        }
     }
 
     private fun normalizeDohUrl(value: String?): Result<String?> {
