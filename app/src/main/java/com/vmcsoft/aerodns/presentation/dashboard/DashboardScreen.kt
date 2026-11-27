@@ -1,21 +1,6 @@
 package com.vmcsoft.aerodns.presentation.dashboard
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,25 +9,24 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.CircularProgressIndicator as Material2CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -59,8 +43,9 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -70,16 +55,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vmcsoft.aerodns.domain.model.ConnectionState
 import com.vmcsoft.aerodns.domain.model.DnsHealth
@@ -91,10 +70,7 @@ import com.vmcsoft.aerodns.presentation.components.CustomDnsDialog
 import com.vmcsoft.aerodns.presentation.components.DnsSelectorBottomSheet
 import com.vmcsoft.aerodns.presentation.components.SpeedTestDialog
 import com.vmcsoft.aerodns.presentation.theme.ActiveButtonCyan
-import com.vmcsoft.aerodns.presentation.theme.AeroCyan
-import com.vmcsoft.aerodns.presentation.theme.AeroGradient
 import com.vmcsoft.aerodns.presentation.theme.DeepSkyBlack
-import com.vmcsoft.aerodns.presentation.theme.ElectricBlue
 import com.vmcsoft.aerodns.presentation.theme.MidnightSurface
 import com.vmcsoft.aerodns.presentation.theme.StatusDisconnected
 import com.vmcsoft.aerodns.presentation.theme.StrokeGray
@@ -150,30 +126,23 @@ fun DashboardScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF0B1118),
-                            DeepSkyBlack,
-                            Color(0xFF05070A)
-                        )
-                    )
-                )
                 .padding(innerPadding)
         ) {
             Column(
                 modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .widthIn(max = 520.dp)
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp, vertical = 28.dp)
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
             ) {
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    DashboardHeader()
                     ConnectionPanel(
                         connectionState = connectionState,
                         selectedProtocol = selectedProtocol,
@@ -195,10 +164,9 @@ fun DashboardScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.size(12.dp))
 
                 ActionButtons(
                     speedTestEnabled = (connectionState as? ConnectionState.Connected)?.controlPolicy?.systemManaged != true,
@@ -312,111 +280,128 @@ fun DashboardScreen(
 }
 
 @Composable
+private fun DashboardHeader() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Shield,
+                contentDescription = null,
+                modifier = Modifier.padding(9.dp).size(20.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            text = "AeroDNS",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.semantics { heading() }
+        )
+    }
+}
+
+@Composable
 private fun ConnectionPanel(
     connectionState: ConnectionState,
     selectedProtocol: DnsProtocol,
     onConnectToggle: () -> Unit
 ) {
-    val isConnectingOrDisconnecting = connectionState is ConnectionState.Connecting ||
-        connectionState is ConnectionState.Disconnecting
-    val isConnected = connectionState is ConnectionState.Connected
     val connected = connectionState as? ConnectionState.Connected
+    val isBusy = connectionState is ConnectionState.Connecting ||
+        connectionState is ConnectionState.Disconnecting
     val systemManaged = connected?.controlPolicy?.systemManaged == true
     val context = LocalContext.current
 
-    Column(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        color = MidnightSurface,
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, StrokeGray)
     ) {
-        AnimatedContent(
-            targetState = connectionState,
-            transitionSpec = {
-                fadeIn(animationSpec = tween(220)) + slideInVertically { it / 2 } togetherWith
-                    fadeOut(animationSpec = tween(220)) + slideOutVertically { -it / 2 }
-            },
-            label = "status"
-        ) { state ->
-            Text(
-                text = getStatusText(state),
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontSize = 30.sp,
-                    lineHeight = 36.sp
-                ),
-                color = getStatusColor(state),
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-
-        connected?.activeConfig?.let { config ->
-            Text(text = config.displayName, color = TextGray, textAlign = TextAlign.Center)
-        }
-        if (systemManaged) {
-            Text(
-                text = if (connected?.controlPolicy?.isKnown == false)
-                    "Android VPN settings could not be read. Open VPN settings to manage this connection."
-                else if (connected?.controlPolicy?.lockdown == true)
-                    "AeroDNS changes DNS only. Turn off ‘Block connections without VPN’ in Android VPN settings to let other apps use the internet."
-                else "Always-on VPN is controlled by Android. Turn it off in VPN settings to disconnect or run a speed test.",
-                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
-            )
-            TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }) { Text("VPN settings") }
-        }
-        if (connected?.dnsHealth is DnsHealth.Unhealthy) {
-            Text(
-                text = if (systemManaged) "VPN is on. DNS checks will retry automatically. You can choose another resolver."
-                    else "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
-                color = TextGray, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center
-            )
-        }
-
-        ConnectButton(
-            isConnected = isConnected,
-            isBusy = isConnectingOrDisconnecting,
-            enabled = !systemManaged,
-            onClick = onConnectToggle
-        )
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            MiniMetric(
-                label = if (connected == null) "Selected protocol" else "Protocol",
-                value = (connected?.activeConfig?.protocol ?: selectedProtocol).label
-            )
-            MiniMetric(
-                label = "DNS latency",
-                value = (connected?.dnsHealth as? DnsHealth.Healthy)?.latencyMs?.let { "${it}ms" } ?: "--"
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "DNS connection",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextGray
+                )
+                Text(
+                    text = getStatusText(connectionState),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = getStatusColor(connectionState),
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            connected?.activeConfig?.let { config ->
+                DashboardMetric(label = "Active resolver", value = config.displayName)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                DashboardMetric(
+                    label = if (connected == null) "Selected protocol" else "Protocol",
+                    value = (connected?.activeConfig?.protocol ?: selectedProtocol).label,
+                    modifier = Modifier.weight(1f)
+                )
+                DashboardMetric(
+                    label = "DNS latency",
+                    value = (connected?.dnsHealth as? DnsHealth.Healthy)?.latencyMs
+                        ?.let { "$it ms" } ?: "—",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (systemManaged) {
+                Text(
+                    text = when {
+                        connected?.controlPolicy?.isKnown == false ->
+                            "Android VPN settings could not be read. Open VPN settings to manage this connection."
+                        connected?.controlPolicy?.lockdown == true ->
+                            "AeroDNS changes DNS only. Turn off ‘Block connections without VPN’ in Android VPN settings to let other apps use the internet."
+                        else ->
+                            "Always-on VPN is controlled by Android. Turn it off in VPN settings to disconnect or run a speed test."
+                    },
+                    color = TextGray,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }) {
+                    Text("VPN settings")
+                }
+            }
+            if (connected?.dnsHealth is DnsHealth.Unhealthy) {
+                Text(
+                    text = if (systemManaged)
+                        "VPN is on. DNS checks will retry automatically. You can choose another resolver."
+                    else
+                        "VPN is on. DNS checks will retry automatically. You can disconnect or choose another resolver.",
+                    color = TextGray,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            ConnectButton(connected != null, isBusy, !systemManaged, onConnectToggle)
         }
     }
 }
 
 @Composable
-private fun MiniMetric(
-    label: String,
-    value: String
-) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+private fun DashboardMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = TextGray, style = MaterialTheme.typography.labelMedium)
         Text(
-            text = label,
+            value,
             style = MaterialTheme.typography.titleMedium,
-            color = TextGray,
-            maxLines = 1
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
     }
@@ -426,79 +411,36 @@ private fun MiniMetric(
 private fun ConnectButton(
     isConnected: Boolean,
     isBusy: Boolean,
-    enabled: Boolean = true,
+    enabled: Boolean,
     onClick: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "connect_button")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.24f,
-        targetValue = 0.72f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
-    var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
-        animationSpec = spring(dampingRatio = 0.62f),
-        label = "button_scale"
-    )
-
-    Box(
-        contentAlignment = Alignment.Center,
+    Button(
+        onClick = onClick,
+        enabled = enabled && !isBusy,
         modifier = Modifier
-            .size(196.dp)
-            .scale(scale)
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .semantics { contentDescription = "Connect/Disconnect" },
+        shape = RoundedCornerShape(14.dp),
+        colors = if (isConnected) ButtonDefaults.buttonColors(
+            containerColor = DeepSkyBlack,
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ) else ButtonDefaults.buttonColors()
     ) {
-        Box(
-            modifier = Modifier
-                .size(if (isConnected) 196.dp else 178.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            (if (isConnected) ActiveButtonCyan else ElectricBlue).copy(alpha = pulseAlpha * 0.46f),
-                            Color.Transparent
-                        )
-                    )
-                )
-        )
-        Box(
-            modifier = Modifier
-                .size(148.dp)
-                .clip(CircleShape)
-                .background(if (isConnected) connectedButtonBrush() else AeroGradient)
-                .semantics(mergeDescendants = true) { if (!enabled) disabled() }
-                .pointerInput(isBusy, enabled) {
-                    detectTapGestures(
-                        onPress = {
-                            isPressed = true
-                            tryAwaitRelease()
-                            isPressed = false
-                        },
-                        onTap = {
-                            if (!isBusy && enabled) onClick()
-                        }
-                    )
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            if (isBusy) {
-                Material2CircularProgressIndicator(
-                    modifier = Modifier.size(54.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 3.dp
-                )
-            } else {
-                Icon(
-                    imageVector = if (isConnected) Icons.Default.Power else Icons.Default.PowerOff,
-                    contentDescription = "Connect/Disconnect",
-                    modifier = Modifier.size(70.dp),
-                    tint = Color.White
-                )
-            }
+        if (isBusy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        } else {
+            Icon(
+                imageVector = if (isConnected) Icons.Default.PowerOff else Icons.Default.Power,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(if (isConnected) "Disconnect" else "Connect")
         }
     }
 }
@@ -513,33 +455,15 @@ private fun DnsConfigPanel(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MidnightSurface.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(20.dp),
+        color = MidnightSurface,
         border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.72f))
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "Selected DNS server",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextGray,
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = server.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            DashboardMetric(label = "Selected DNS server", value = server.name)
 
             if (protocolOptions.size > 1) {
                 DnsProtocolSelector(
@@ -560,12 +484,12 @@ private fun DnsConfigPanel(
                 } else {
                     if (server.primary.isNotBlank() || server.secondary != null) {
                         AddressRow(
-                            title = if (server.isCustom) "Primary" else "IPv4",
+                            title = "IPv4",
                             primary = server.primary.takeIf { it.isNotBlank() } ?: "N/A",
                             secondary = server.secondary
                         )
                     }
-                    if (!server.isCustom && (server.ipv6Primary != null || server.ipv6Secondary != null)) {
+                    if (server.ipv6Primary != null || server.ipv6Secondary != null) {
                         AddressRow(
                             title = "IPv6",
                             primary = server.ipv6Primary ?: "N/A",
@@ -667,17 +591,14 @@ private fun ActionButtons(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        ElevatedButton(
+        OutlinedButton(
             onClick = onShowSpeedTest,
             enabled = speedTestEnabled,
             modifier = Modifier
                 .weight(1f)
-                .height(54.dp),
-            shape = RoundedCornerShape(8.dp),
-            colors = ButtonDefaults.elevatedButtonColors(
-                containerColor = MidnightSurface,
-                contentColor = MaterialTheme.colorScheme.onSurface
-            )
+                .heightIn(min = 52.dp),
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Speed,
@@ -685,15 +606,15 @@ private fun ActionButtons(
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Speed Test", maxLines = 1)
+            Text("Speed Test")
         }
 
         Button(
             onClick = onShowDnsSelector,
             modifier = Modifier
                 .weight(1f)
-                .height(54.dp),
-            shape = RoundedCornerShape(8.dp),
+                .heightIn(min = 52.dp),
+            shape = RoundedCornerShape(14.dp),
             contentPadding = PaddingValues(horizontal = 12.dp)
         ) {
             Icon(
@@ -702,7 +623,7 @@ private fun ActionButtons(
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Change DNS", maxLines = 1)
+            Text("Change DNS")
         }
     }
 }
@@ -722,7 +643,7 @@ private fun DnsProtocolSelector(
                 onClick = { onProtocolSelected(protocol) },
                 modifier = Modifier
                     .weight(1f)
-                    .height(42.dp),
+                    .heightIn(min = 48.dp),
                 shape = protocolButtonShape(index, protocols.size),
                 colors = ButtonDefaults.outlinedButtonColors(
                     containerColor = if (selected) {
@@ -751,13 +672,6 @@ private fun DnsProtocolSelector(
         }
     }
 }
-
-private fun connectedButtonBrush(): Brush = Brush.radialGradient(
-    colors = listOf(
-        ActiveButtonCyan,
-        Color(0xFF009E96)
-    )
-)
 
 private fun protocolButtonShape(index: Int, count: Int): RoundedCornerShape {
     val corner = 8.dp
