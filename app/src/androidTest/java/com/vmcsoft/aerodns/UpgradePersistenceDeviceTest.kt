@@ -146,7 +146,7 @@ class UpgradePersistenceDeviceTest {
         }
         context.filesDir.resolve("upgrade-$scenario-$phase.json").writeText(JSONObject()
             .put("scenario", scenario).put("phase", phase).put("passed", true)
-            .put("profile_count", wanted.size).put("selected_id", selected)
+            .put("profile_count", repository.getCustomServers().size).put("selected_id", selected)
             .put("protocol", protocol.name).put("package_uid", context.applicationInfo.uid)
             .toString(2))
     }
