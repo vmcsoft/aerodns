@@ -199,8 +199,9 @@ legacy packet-loop preference. Missing certificate opt-in defaults to false.
 The driver requires unchanged preference-file bytes through replacement and dashboard
 startup, plus a stable package UID. It renames the mixed and single-protocol profiles
 through the dashboard editor and checks that every other field survives. It also edits
-the URL-only profile's certificate preference through the repository, force-stops the
-app, and verifies the edited profiles after reopening the dashboard. Each phase is a
+the URL-only profile's certificate preference through the repository, checks an
+IPv6-only address set paired with a DoH URL, force-stops the app, and verifies
+the profiles after reopening the dashboard. Each phase is a
 separate instrumentation invocation. JSON and phase logs stay outside Git. An initially
 active VPN is not part of this scenario.
 

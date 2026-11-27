@@ -87,7 +87,13 @@ class UpgradePersistenceDeviceTest {
             if (it.id == "upgrade-url-only") it.copy(allowUntrustedCertificates = true)
             else it
         }
-        val wanted = if (phase == "verifyEdited") edited else expected
+        val ipv6Doh = edited.first().copy(
+            id = "upgrade-ipv6-doh",
+            name = "IPv6 and DoH",
+            primary = "",
+            secondary = null
+        )
+        val wanted = if (phase == "verifyEdited") edited + ipv6Doh else expected
         assertEquals(wanted, repository.getCustomServers())
         assertEquals(selected, store.getSelectedDnsId())
         assertEquals(protocol, store.getSelectedDnsProtocol())
@@ -135,7 +141,8 @@ class UpgradePersistenceDeviceTest {
                 }
             }
             repository.updateCustomServer(edited.single { it.id == "upgrade-url-only" })
-            assertEquals(edited, repository.getCustomServers())
+            repository.saveCustomServer(ipv6Doh)
+            assertEquals(edited + ipv6Doh, repository.getCustomServers())
         }
         context.filesDir.resolve("upgrade-$scenario-$phase.json").writeText(JSONObject()
             .put("scenario", scenario).put("phase", phase).put("passed", true)
