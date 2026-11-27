@@ -3,6 +3,12 @@ package com.vmcsoft.aerodns
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.ParcelFileDescriptor
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -20,6 +26,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -28,6 +35,8 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class UpgradePersistenceDeviceTest {
+    @get:Rule val compose = createEmptyComposeRule()
+
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
     private val args get() = InstrumentationRegistry.getArguments()
@@ -73,8 +82,9 @@ class UpgradePersistenceDeviceTest {
             store.setLastConnectedDnsId("upgrade-url-only")
             store.setExperimentalPacketLoopEnabled(scenario == "doh")
         }
-        val edited = expected.map {
-            if (it.id == "upgrade-url-only") it.copy(name = "Edited after upgrade — DNS", allowUntrustedCertificates = true)
+        val renamed = expected.map { it.copy(name = "Edited ${it.id} — DNS") }
+        val edited = renamed.map {
+            if (it.id == "upgrade-url-only") it.copy(allowUntrustedCertificates = true)
             else it
         }
         val wanted = if (phase == "verifyEdited") edited else expected
@@ -105,6 +115,25 @@ class UpgradePersistenceDeviceTest {
             assertEquals(selected, store.getSelectedDnsId())
             assertEquals(protocol, store.getSelectedDnsProtocol())
         } else if (phase == "edit") {
+            ActivityScenario.launch(MainActivity::class.java).use { activity ->
+                for ((profile, renamedProfile) in expected.zip(renamed)) {
+                    activity.onActivity {
+                        ViewModelProvider(it)[DashboardViewModel::class.java].onShowCustomDnsDialog(profile)
+                    }
+                    compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
+                        .performTextReplacement(renamedProfile.name)
+                    compose.onNodeWithText("Save").performClick()
+                    withTimeout(5000) {
+                        while (repository.getCustomServers().none {
+                                it.id == profile.id && it.name == renamedProfile.name
+                            }) {
+                            delay(50)
+                        }
+                    }
+                    assertEquals("Editing ${profile.id} must preserve its untouched fields",
+                        renamedProfile, repository.getCustomServers().single { it.id == profile.id })
+                }
+            }
             repository.updateCustomServer(edited.single { it.id == "upgrade-url-only" })
             assertEquals(edited, repository.getCustomServers())
         }

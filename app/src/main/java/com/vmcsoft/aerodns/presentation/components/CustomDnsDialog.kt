@@ -68,8 +68,11 @@ fun CustomDnsDialog(
             serverToEdit?.name ?: "",
             serverToEdit?.primary?.takeIf { it.isNotBlank() }
                 ?: serverToEdit?.ipv6Primary ?: "",
-            serverToEdit?.secondary?.takeIf { it.isNotBlank() }
-                ?: serverToEdit?.ipv6Secondary ?: "",
+            if (serverToEdit?.primary.isNullOrBlank()) {
+                serverToEdit?.ipv6Secondary.orEmpty()
+            } else {
+                serverToEdit?.secondary.orEmpty()
+            },
             serverToEdit?.dohUrl ?: "",
             serverToEdit?.customBootstrapIp ?: "",
             serverToEdit?.allowUntrustedCertificates ?: false,
@@ -221,7 +224,7 @@ fun CustomDnsDialog(
                         secondaryError = null
                         dohUrlError = null
                         bootstrapIpError = null
-                        if (it != DnsProtocol.DOH) {
+                        if (!isEditMode && it != DnsProtocol.DOH) {
                             allowUntrustedCertificates = false
                         }
                     }

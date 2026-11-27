@@ -393,11 +393,7 @@ class DashboardViewModel @Inject constructor(
                 result.getOrNull()?.let { savedServer ->
                     // Update selection to the saved server
                     _selectedServer.value = savedServer
-                    val resolvedProtocol = if (!savedServer.dohUrl.isNullOrBlank()) {
-                        DnsProtocol.DOH
-                    } else {
-                        resolveProtocolForServer(savedServer)
-                    }
+                    val resolvedProtocol = savedServer.resolveSelectedProtocol(protocol)
                     _selectedProtocol.value = resolvedProtocol
                     preferencesDataStore.setSelectedDnsId(savedServer.id)
                     preferencesDataStore.setSelectedDnsProtocol(resolvedProtocol)
