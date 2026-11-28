@@ -2,6 +2,13 @@
 
 Notable changes to AeroDNS are recorded here.
 
+## 1.5.4 — Release candidate
+
+- Refresh the dashboard with a title-free layout and borderless cards and DNS rows.
+- Make saved resolvers easier to find and edit.
+- Preserve custom DNS addresses, DoH settings, and certificate preferences when editing a profile.
+- Ask before discarding unsaved changes when switching DNS protocol tabs.
+
 ## 1.5.3 — 2026-09-17
 
 - Improve VPN startup, recovery and connection-state reporting.
