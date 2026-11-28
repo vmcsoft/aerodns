@@ -293,8 +293,7 @@ private fun ConnectionPanel(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MidnightSurface,
-        shape = RoundedCornerShape(24.dp),
-        border = BorderStroke(1.dp, StrokeGray)
+        shape = RoundedCornerShape(24.dp)
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -430,8 +429,7 @@ private fun DnsConfigPanel(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MidnightSurface,
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.72f))
+        color = MidnightSurface
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
@@ -477,8 +475,7 @@ private fun AddressRow(primary: String?, secondary: String?) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
-        color = DeepSkyBlack.copy(alpha = 0.46f),
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.55f))
+        color = DeepSkyBlack.copy(alpha = 0.46f)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -518,8 +515,7 @@ private fun InfoRow(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
-        color = DeepSkyBlack.copy(alpha = 0.46f),
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.55f))
+        color = DeepSkyBlack.copy(alpha = 0.46f)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
