@@ -483,20 +483,8 @@ private fun DnsConfigPanel(
                         secondary = "HTTPS endpoint used for encrypted DNS queries"
                     )
                 } else {
-                    if (server.primary.isNotBlank() || server.secondary != null) {
-                        AddressRow(
-                            title = "IPv4",
-                            primary = server.primary.takeIf { it.isNotBlank() } ?: "N/A",
-                            secondary = server.secondary
-                        )
-                    }
-                    if (server.ipv6Primary != null || server.ipv6Secondary != null) {
-                        AddressRow(
-                            title = "IPv6",
-                            primary = server.ipv6Primary ?: "N/A",
-                            secondary = server.ipv6Secondary
-                        )
-                    }
+                    AddressRow(primary = server.primary, secondary = server.secondary)
+                    AddressRow(primary = server.ipv6Primary, secondary = server.ipv6Secondary)
                 }
             }
         }
@@ -504,11 +492,15 @@ private fun DnsConfigPanel(
 }
 
 @Composable
-private fun AddressRow(
-    title: String,
-    primary: String,
-    secondary: String?
-) {
+private fun AddressRow(primary: String?, secondary: String?) {
+    val addresses = listOfNotNull(primary, secondary).filter(String::isNotBlank)
+    if (addresses.isEmpty()) return
+    val title = when (addresses.map { ':' in it }.distinct().singleOrNull()) {
+        true -> "IPv6"
+        false -> "IPv4"
+        null -> "DNS addresses"
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -525,13 +517,13 @@ private fun AddressRow(
                 color = TextGray
             )
             Text(
-                text = primary,
+                text = addresses.first(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            secondary?.let {
+            addresses.getOrNull(1)?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,

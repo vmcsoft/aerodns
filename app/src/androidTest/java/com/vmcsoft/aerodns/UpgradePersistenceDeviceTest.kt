@@ -3,16 +3,19 @@ package com.vmcsoft.aerodns
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasAnySibling
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -168,7 +171,12 @@ class UpgradePersistenceDeviceTest {
                     }
                     compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
                         .performScrollTo().performTextReplacement(renamedProfile.name)
-                    compose.onNodeWithText("Save").performClick()
+                    val save = compose.onNodeWithText("Save")
+                    if (!save.isDisplayed()) {
+                        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+                        compose.waitUntil(5000) { save.isDisplayed() }
+                    }
+                    save.performClick()
                     withTimeout(5000) {
                         while (repository.getCustomServers().none {
                                 it.id == profile.id && it.name == renamedProfile.name
@@ -187,10 +195,14 @@ class UpgradePersistenceDeviceTest {
                 compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(alternative.name))
                 compose.onNode(hasText(alternative.name) and hasClickAction()).performClick()
                 awaitSelection(store, alternative.id, DnsProtocol.STANDARD)
+                assertMixedAddressPair(alternative.primary, requireNotNull(alternative.secondary))
                 openChooser()
                 compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(original.name))
                 compose.onNode(hasText(original.name) and hasClickAction()).performClick()
                 awaitSelection(store, selected, protocol)
+                if (protocol == DnsProtocol.STANDARD) {
+                    assertMixedAddressPair(requireNotNull(original.ipv6Primary), requireNotNull(original.ipv6Secondary))
+                }
                 assertEquals("Selecting saved profiles must not change them", edited, repository.getCustomServers())
             }
             repository.saveCustomServer(ipv6Doh)
@@ -204,8 +216,14 @@ class UpgradePersistenceDeviceTest {
     }
 
     private fun openChooser() {
-        compose.onNodeWithText("Change DNS").performClick()
+        compose.onNodeWithText("Change DNS").performScrollTo().performClick()
         compose.onNodeWithText("Select DNS Server").assertIsDisplayed()
+    }
+
+    private fun assertMixedAddressPair(primary: String, secondary: String) {
+        val mixedLabel = hasAnySibling(hasText("DNS addresses"))
+        compose.onNode(hasText(primary) and mixedLabel).performScrollTo().assertIsDisplayed()
+        compose.onNode(hasText(secondary) and mixedLabel).performScrollTo().assertIsDisplayed()
     }
 
     private suspend fun awaitSelection(store: PreferencesDataStore, id: String, protocol: DnsProtocol) {
@@ -218,7 +236,7 @@ class UpgradePersistenceDeviceTest {
 
     private fun profiles() = listOf(
         DnsServer("upgrade-dual", "Upgrade DNS — Tiếng Việt 日本語", "192.0.2.53", "198.51.100.53",
-            "2001:db8::53", "2001:db8:1::53", "https://resolver.example/dns-query?mode=family&x=%2F",
+            "2001:db8::53", "192.0.2.54", "https://resolver.example/dns-query?mode=family&x=%2F",
             supportedProtocols = listOf(DnsProtocol.STANDARD, DnsProtocol.DOH), isCustom = true),
         DnsServer("upgrade-url-only", "Strict URL only " + "長".repeat(256), "",
             dohUrl = "https://dns.example/dns-query?policy=a%26b",
@@ -226,6 +244,6 @@ class UpgradePersistenceDeviceTest {
         DnsServer("upgrade-unsafe", "Upgrade HTTPS", "",
             dohUrl = "https://localhost:18443/health-ok-upgrade", customBootstrapIp = "127.0.0.1",
             allowUntrustedCertificates = true, supportedProtocols = listOf(DnsProtocol.DOH), isCustom = true),
-        DnsServer("upgrade-standard", "IPv4 only", "203.0.113.53", isCustom = true)
+        DnsServer("upgrade-standard", "Standard resolver", "203.0.113.53", "2001:db8::54", isCustom = true)
     )
 }

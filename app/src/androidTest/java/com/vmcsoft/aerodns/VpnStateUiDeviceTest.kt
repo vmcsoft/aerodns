@@ -9,6 +9,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -63,6 +64,7 @@ class VpnStateUiDeviceTest {
     private val repository get() = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
     private val component get() = ComponentName(context, DnsTileService::class.java).flattenToString()
     private var addedTile = false
+    private var restoreSavedResolver: (suspend () -> Unit)? = null
 
     @Before fun prepare() {
         assertNull("Prepare VPN consent first", VpnService.prepare(context))
@@ -79,6 +81,7 @@ class VpnStateUiDeviceTest {
             compose.activityRule.scenario.onActivity { it.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             shell("cmd statusbar collapse")
             if (addedTile) shell("cmd statusbar remove-tile $component")
+            runBlocking { restoreSavedResolver?.invoke() }
         }
     }
 
@@ -124,6 +127,19 @@ class VpnStateUiDeviceTest {
         await { tileDescription() == "Tap to connect" }
         shell("cmd statusbar collapse")
         assertDashboard("Disconnected")
+        val preferences = PreferencesDataStore(context)
+        runBlocking {
+            val originalProfiles = preferences.getCustomDnsJson() ?: "[]"
+            val originalSelection = requireNotNull(preferences.getSelectedDnsId())
+            val originalProtocol = preferences.getSelectedDnsProtocol()
+            val originalLastConnected = preferences.getLastConnectedDnsId()
+            restoreSavedResolver = {
+                preferences.setCustomDnsJson(originalProfiles)
+                preferences.setSelectedDnsId(originalSelection)
+                preferences.setSelectedDnsProtocol(originalProtocol)
+                preferences.setLastConnectedDnsId(originalLastConnected ?: originalSelection)
+            }
+        }
         val name = "Saved health resolver ${System.nanoTime()}"
         compose.onNodeWithText("Change DNS").performClick()
         compose.onNodeWithText("Add Custom DNS").performClick()
@@ -137,12 +153,16 @@ class VpnStateUiDeviceTest {
         compose.onNodeWithContentDescription("Allow untrusted certificates")
             .performScrollTo().assertIsOff().performClick()
         compose.onNodeWithText("I understand, enable").performClick()
-        compose.onNodeWithText("Save & Connect").performClick()
+        val saveAndConnect = compose.onNodeWithText("Save & Connect")
+        if (!saveAndConnect.isDisplayed()) {
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            compose.waitUntil(5000) { saveAndConnect.isDisplayed() }
+        }
+        saveAndConnect.performClick()
 
         val connected = waitState {
             it is ConnectionState.Connected && it.server.name == name && it.dnsHealth is DnsHealth.Healthy
         } as ConnectionState.Connected
-        val preferences = PreferencesDataStore(context)
         val profile = runBlocking { DnsRepositoryImpl(preferences).getCustomServers().single { it.name == name } }
         val active = requireNotNull(connected.activeConfig)
         assertEquals(profile.id, active.serverId)

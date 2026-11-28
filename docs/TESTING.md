@@ -192,7 +192,7 @@ app binaries and a nondecreasing versionCode. The same test APK seeds the baseli
 and verifies the candidate. Three scenarios cover Standard selection, custom DoH
 selection and older JSON records with absent bootstrap/certificate fields. Each keeps
 four profiles: dual-stack/mixed-protocol, URL-only strict, custom certificate opt-in,
-and IPv4-only Standard. Assertions cover all persisted profile fields, Unicode/long
+and Standard-only with a mixed IPv4/IPv6 pair. Assertions cover all persisted profile fields, Unicode/long
 names, encoded URLs, selected protocol, last-connected ID and both values of the
 legacy packet-loop preference. Missing certificate opt-in defaults to false.
 
@@ -202,7 +202,8 @@ from the resolver chooser, switches the editor's protocol tabs, and verifies tha
 name-only edits preserve the other fields. It changes the URL-only profile's
 certificate preference through the editor's explicit confirmation and verifies the
 saved value. It selects existing profiles through the chooser and checks their IDs and
-protocols. It also checks an IPv6-only address set paired with a DoH URL and verifies
+protocols and checks the dashboard labels for both IPv4-first and IPv6-first pairs.
+It also checks an IPv6-only address set paired with a DoH URL and verifies
 the profiles again after force-stopping and reopening the app. Each phase is a separate
 instrumentation invocation. JSON and phase logs stay outside Git. Keep the VPN
 disconnected for this scenario.
