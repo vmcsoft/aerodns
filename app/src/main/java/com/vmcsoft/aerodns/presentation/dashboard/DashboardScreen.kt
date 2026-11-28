@@ -22,7 +22,6 @@ import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -142,7 +141,6 @@ fun DashboardScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    DashboardHeader()
                     ConnectionPanel(
                         connectionState = connectionState,
                         selectedProtocol = selectedProtocol,
@@ -281,32 +279,6 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun DashboardHeader() {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Shield,
-                contentDescription = null,
-                modifier = Modifier.padding(9.dp).size(20.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-        }
-        Text(
-            text = "AeroDNS",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.semantics { heading() }
-        )
-    }
-}
-
-@Composable
 private fun ConnectionPanel(
     connectionState: ConnectionState,
     selectedProtocol: DnsProtocol,
@@ -331,6 +303,7 @@ private fun ConnectionPanel(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "DNS connection",
+                    modifier = Modifier.semantics { heading() },
                     style = MaterialTheme.typography.labelLarge,
                     color = TextGray
                 )
