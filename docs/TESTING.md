@@ -201,8 +201,9 @@ startup, plus a stable package UID. It opens the mixed and single-protocol profi
 from the resolver chooser, switches the editor's protocol tabs, and verifies that
 name-only edits preserve the other fields. It changes the URL-only profile's
 certificate preference through the editor's explicit confirmation and verifies the
-saved value. It selects existing profiles through the chooser and checks their IDs and
-protocols and checks the dashboard labels for both IPv4-first and IPv6-first pairs.
+saved value. For a mixed profile, it verifies the tab-switch prompt and saves the
+certificate exception turned off. It selects existing profiles through the chooser and
+checks their IDs and protocols and checks the dashboard labels for both IPv4-first and IPv6-first pairs.
 It also checks an IPv6-only address set paired with a DoH URL and verifies
 the profiles again after force-stopping and reopening the app. Each phase is a separate
 instrumentation invocation. JSON and phase logs stay outside Git. Keep the VPN
