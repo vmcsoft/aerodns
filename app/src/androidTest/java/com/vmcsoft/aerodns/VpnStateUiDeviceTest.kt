@@ -132,12 +132,10 @@ class VpnStateUiDeviceTest {
             val originalProfiles = preferences.getCustomDnsJson() ?: "[]"
             val originalSelection = requireNotNull(preferences.getSelectedDnsId())
             val originalProtocol = preferences.getSelectedDnsProtocol()
-            val originalLastConnected = preferences.getLastConnectedDnsId()
             restoreSavedResolver = {
                 preferences.setCustomDnsJson(originalProfiles)
                 preferences.setSelectedDnsId(originalSelection)
                 preferences.setSelectedDnsProtocol(originalProtocol)
-                preferences.setLastConnectedDnsId(originalLastConnected ?: originalSelection)
             }
         }
         val name = "Saved health resolver ${System.nanoTime()}"

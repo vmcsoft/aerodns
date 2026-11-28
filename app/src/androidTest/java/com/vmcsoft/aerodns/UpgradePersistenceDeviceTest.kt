@@ -105,7 +105,8 @@ class UpgradePersistenceDeviceTest {
             id = "upgrade-ipv6-doh",
             name = "IPv6 and DoH",
             primary = "",
-            secondary = null
+            secondary = null,
+            ipv6Secondary = "2001:db8:1::53"
         )
         val wanted = if (phase == "verifyEdited") edited + ipv6Doh else expected
         assertEquals(wanted, repository.getCustomServers())
