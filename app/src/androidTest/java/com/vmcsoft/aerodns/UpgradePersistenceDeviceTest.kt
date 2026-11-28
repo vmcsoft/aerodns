@@ -216,7 +216,7 @@ class UpgradePersistenceDeviceTest {
     }
 
     private fun openChooser() {
-        compose.onNodeWithText("Change DNS").performScrollTo().performClick()
+        compose.onNodeWithText("Change DNS").performClick()
         compose.onNodeWithText("Select DNS Server").assertIsDisplayed()
     }
 
