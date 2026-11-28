@@ -9,6 +9,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -21,6 +22,8 @@ import com.vmcsoft.aerodns.data.dns.DohDnsTransport
 import com.vmcsoft.aerodns.data.dns.DohEndpointResolver
 import com.vmcsoft.aerodns.data.dns.DnsWireMessage
 import com.vmcsoft.aerodns.data.dns.DnsTransportResult
+import com.vmcsoft.aerodns.data.local.PreferencesDataStore
+import com.vmcsoft.aerodns.data.repository.DnsRepositoryImpl
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
@@ -61,6 +64,7 @@ class VpnStateUiDeviceTest {
     private val repository get() = EntryPointAccessors.fromApplication(context, ValidationRepositories::class.java).vpnRepository()
     private val component get() = ComponentName(context, DnsTileService::class.java).flattenToString()
     private var addedTile = false
+    private var restoreSavedResolver: (suspend () -> Unit)? = null
 
     @Before fun prepare() {
         assertNull("Prepare VPN consent first", VpnService.prepare(context))
@@ -77,6 +81,7 @@ class VpnStateUiDeviceTest {
             compose.activityRule.scenario.onActivity { it.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             shell("cmd statusbar collapse")
             if (addedTile) shell("cmd statusbar remove-tile $component")
+            runBlocking { restoreSavedResolver?.invoke() }
         }
     }
 
@@ -122,9 +127,47 @@ class VpnStateUiDeviceTest {
         await { tileDescription() == "Tap to connect" }
         shell("cmd statusbar collapse")
         assertDashboard("Disconnected")
-        // Exercise the app's touch handler, rather than calling the view model directly.
-        compose.onNodeWithContentDescription("Connect/Disconnect").performTouchInput { click() }
-        waitState { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy }
+        val preferences = PreferencesDataStore(context)
+        runBlocking {
+            val originalProfiles = preferences.getCustomDnsJson() ?: "[]"
+            val originalSelection = requireNotNull(preferences.getSelectedDnsId())
+            val originalProtocol = preferences.getSelectedDnsProtocol()
+            restoreSavedResolver = {
+                preferences.setCustomDnsJson(originalProfiles)
+                preferences.setSelectedDnsId(originalSelection)
+                preferences.setSelectedDnsProtocol(originalProtocol)
+            }
+        }
+        val name = "Saved health resolver ${System.nanoTime()}"
+        compose.onNodeWithText("Change DNS").performClick()
+        compose.onNodeWithText("Add Custom DNS").performClick()
+        compose.onNodeWithText("DoH (HTTPS)").assertIsDisplayed().performClick()
+        compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
+            .performScrollTo().performTextReplacement(name)
+        compose.onNode(hasSetTextAction() and hasText("DoH URL *"))
+            .performScrollTo().performTextReplacement(requireNotNull(config.dohUrl))
+        compose.onNode(hasSetTextAction() and hasText("Custom Bootstrap IP"))
+            .performScrollTo().performTextReplacement("127.0.0.1")
+        compose.onNodeWithContentDescription("Allow untrusted certificates")
+            .performScrollTo().assertIsOff().performClick()
+        compose.onNodeWithText("I understand, enable").performClick()
+        val saveAndConnect = compose.onNodeWithText("Save & Connect")
+        if (!saveAndConnect.isDisplayed()) {
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            compose.waitUntil(5000) { saveAndConnect.isDisplayed() }
+        }
+        saveAndConnect.performClick()
+
+        val connected = waitState {
+            it is ConnectionState.Connected && it.server.name == name && it.dnsHealth is DnsHealth.Healthy
+        } as ConnectionState.Connected
+        val profile = runBlocking { DnsRepositoryImpl(preferences).getCustomServers().single { it.name == name } }
+        val active = requireNotNull(connected.activeConfig)
+        assertEquals(profile.id, active.serverId)
+        assertEquals(DnsProtocol.DOH, active.protocol)
+        assertEquals(profile.dohUrl, active.dohUrl)
+        assertEquals(config.customBootstrapIp, active.customBootstrapIp)
+        assertTrue(active.allowUntrustedCertificates)
         compose.onNodeWithContentDescription("Connect/Disconnect").performTouchInput { click() }
         waitState { it is ConnectionState.Disconnected }
         await { !hasVpn() }

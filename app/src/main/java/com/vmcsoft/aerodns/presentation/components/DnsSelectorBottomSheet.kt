@@ -1,43 +1,45 @@
 package com.vmcsoft.aerodns.presentation.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vmcsoft.aerodns.domain.model.DnsServer
-import com.vmcsoft.aerodns.presentation.theme.AeroCyan
-import com.vmcsoft.aerodns.presentation.theme.DeepSkyBlack
-import com.vmcsoft.aerodns.presentation.theme.MidnightSurface
-import com.vmcsoft.aerodns.presentation.theme.StrokeGray
-import com.vmcsoft.aerodns.presentation.theme.TextSecondary
+import com.vmcsoft.aerodns.domain.model.label
+import com.vmcsoft.aerodns.domain.model.selectableProtocols
 
-private fun DnsServer.addressLine(): String = when {
-    primary.isNotBlank() -> "$primary / ${secondary ?: "N/A"}"
-    ipv6Primary != null -> "$ipv6Primary / ${ipv6Secondary ?: "N/A"}"
-    !dohUrl.isNullOrBlank() -> dohUrl
-    else -> "N/A"
+private fun DnsServer.addressLine(): String? = when {
+    primary.isNotBlank() -> listOfNotNull(primary, secondary).joinToString(" / ")
+    !ipv6Primary.isNullOrBlank() -> listOfNotNull(ipv6Primary, ipv6Secondary).joinToString(" / ")
+    else -> dohUrl?.takeIf { it.isNotBlank() }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,179 +50,130 @@ fun DnsSelectorBottomSheet(
     onDismiss: () -> Unit,
     onAddCustomDns: () -> Unit = {},
     onEditCustomDns: ((DnsServer) -> Unit)? = null,
-    onDeleteCustomDns: ((DnsServer) -> Unit)? = null
+    onDeleteCustomDns: ((DnsServer) -> Unit)? = null,
+    selectedServerId: String? = null
 ) {
-    // Group servers by category
-    val grouped = remember(servers) {
-        servers.groupBy { it.category }
-    }
-
-    // Track expansion state for each category
+    val custom = remember(servers) { servers.filter { it.isCustom } }
+    val builtIn = remember(servers) { servers.filterNot { it.isCustom }.groupBy { it.category } }
     val expandedCategories = remember { mutableStateMapOf<String, Boolean>() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = DeepSkyBlack,
-        shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(top = 12.dp)
-                    .size(width = 44.dp, height = 4.dp)
-                    .background(StrokeGray, RoundedCornerShape(8.dp))
-            )
-        }
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.background,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF101720),
-                            DeepSkyBlack
-                        )
-                    )
-                )
-                .padding(horizontal = 18.dp, vertical = 12.dp)
+                .fillMaxHeight(0.9f)
+                .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Select DNS Server",
+                "Select DNS Server",
                 style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-            Text(
-                text = "${servers.size} providers available",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-                modifier = Modifier.padding(bottom = 16.dp)
+                modifier = Modifier.semantics { heading() }
             )
 
             LazyColumn(
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxHeight(0.7f)
+                contentPadding = PaddingValues(bottom = 8.dp)
             ) {
-                grouped.forEach { (category, serversInCategory) ->
-                    val shouldGroupCategory = category != null &&
-                        category != "cloudflare" &&
-                        serversInCategory.size > 1
+                if (custom.isNotEmpty()) {
+                    item("custom-title") { ResolverSectionHeading("Custom profiles") }
+                    items(custom, key = { it.id }) { server ->
+                        ResolverCard(
+                            server = server,
+                            selected = server.id == selectedServerId,
+                            onClick = { onServerSelected(server) },
+                            onEdit = onEditCustomDns,
+                            onDelete = onDeleteCustomDns
+                        )
+                    }
+                }
 
-                    if (shouldGroupCategory) {
-                        val categoryKey = category ?: return@forEach
+                if (builtIn.isNotEmpty()) {
+                    item("built-in-title") { ResolverSectionHeading("Built-in resolvers") }
+                }
+                builtIn.forEach { (category, group) ->
+                    if (category != null && category != "cloudflare" && group.size > 1) {
+                        val expanded = expandedCategories[category]
+                            ?: group.any { it.id == selectedServerId }
 
-                        // Expandable category with multiple variants
-                        item(key = "header_$categoryKey") {
-                            DnsCategoryHeader(
-                                displayName = serversInCategory.first().name.split(" (").first(),
-                                isExpanded = expandedCategories[categoryKey] ?: false,
-                                onToggle = {
-                                    expandedCategories[categoryKey] = !(expandedCategories[categoryKey] ?: false)
-                                }
+                        item("category-$category") {
+                            ResolverCategory(
+                                name = group.first().name.substringBefore(" ("),
+                                expanded = expanded,
+                                onToggle = { expandedCategories[category] = !expanded }
                             )
                         }
-
-                        // Variants (shown when expanded)
-                        if (expandedCategories[categoryKey] == true) {
-                            items(
-                                items = serversInCategory,
-                                key = { "variant_${it.id}" }
-                            ) { server ->
-                                DnsVariantCard(
+                        if (expanded) {
+                            items(group, key = { it.id }) { server ->
+                                ResolverCard(
                                     server = server,
+                                    selected = server.id == selectedServerId,
                                     onClick = { onServerSelected(server) },
-                                    onEdit = if (server.isCustom) onEditCustomDns else null,
-                                    onDelete = if (server.isCustom) onDeleteCustomDns else null
+                                    modifier = Modifier.padding(start = 12.dp)
                                 )
                             }
                         }
                     } else {
-                        // Single server (no category or single variant)
-                        items(
-                            items = serversInCategory,
-                            key = { "server_${it.id}" }
-                        ) { server ->
-                            DnsServerCard(
-                                server = server,
-                                onClick = { onServerSelected(server) },
-                                onEdit = if (server.isCustom) onEditCustomDns else null,
-                                onDelete = if (server.isCustom) onDeleteCustomDns else null
-                            )
+                        items(group, key = { it.id }) { server ->
+                            ResolverCard(server, server.id == selectedServerId, { onServerSelected(server) })
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            OutlinedButton(
+            Button(
                 onClick = {
                     onDismiss()
                     onAddCustomDns()
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, AeroCyan.copy(alpha = 0.55f))
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                shape = RoundedCornerShape(14.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = AeroCyan
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Add Custom DNS", color = AeroCyan)
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Add Custom DNS")
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
 
 @Composable
-fun DnsCategoryHeader(
-    displayName: String,
-    isExpanded: Boolean,
-    onToggle: () -> Unit
-) {
-    Card(
+private fun ResolverSectionHeading(title: String) {
+    Text(
+        title,
+        modifier = Modifier.padding(top = 4.dp).semantics { heading() },
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelLarge
+    )
+}
+
+@Composable
+private fun ResolverCategory(name: String, expanded: Boolean, onToggle: () -> Unit) {
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MidnightSurface
-        ),
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.75f))
+            .clickable(role = Role.Button, onClick = onToggle)
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = if (isExpanded) "Variants shown" else "Multiple profiles",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
-            }
-
+            Text(name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
             Icon(
-                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = if (isExpanded) "Collapse" else "Expand",
+                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
         }
@@ -228,204 +181,104 @@ fun DnsCategoryHeader(
 }
 
 @Composable
-fun DnsVariantCard(
+private fun ResolverCard(
     server: DnsServer,
+    selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     onEdit: ((DnsServer) -> Unit)? = null,
     onDelete: ((DnsServer) -> Unit)? = null
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp), // Indent variants
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = DeepSkyBlack.copy(alpha = 0.76f)
-        ),
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.55f))
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) colors.primary.copy(alpha = 0.08f) else colors.surface,
+        border = BorderStroke(1.dp, if (selected) colors.primary.copy(alpha = 0.65f) else colors.outline)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = server.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = server.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
-                Text(
-                    text = server.addressLine(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AeroCyan,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (onEdit != null || onDelete != null) {
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        server.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        server.selectableProtocols().joinToString(" · ") { it.label },
+                        color = if (selected) colors.primary else colors.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    server.addressLine()?.let {
+                        Text(
+                            it,
+                            color = colors.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        onEdit?.let {
-                            DropdownMenuItem(
-                                text = { Text("Edit") },
-                                onClick = {
-                                    showMenu = false
-                                    it(server)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                        }
-                        onDelete?.let {
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
-                                onClick = {
-                                    showMenu = false
-                                    it(server)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                        }
+                    if (server.description.isNotBlank()) {
+                        Text(server.description, style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant)
                     }
                 }
+                Icon(
+                    if (selected) Icons.Default.CheckCircle else Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = if (selected) colors.primary else colors.onSurfaceVariant
+                )
+            }
+            if (onEdit != null || onDelete != null) {
+                ResolverOptions(server, onEdit, onDelete)
             }
         }
     }
 }
 
 @Composable
-fun DnsServerCard(
+private fun ResolverOptions(
     server: DnsServer,
-    onClick: () -> Unit,
-    onEdit: ((DnsServer) -> Unit)? = null,
-    onDelete: ((DnsServer) -> Unit)? = null
+    onEdit: ((DnsServer) -> Unit)?,
+    onDelete: ((DnsServer) -> Unit)?
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MidnightSurface
-        ),
-        border = BorderStroke(1.dp, StrokeGray.copy(alpha = 0.75f))
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = server.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = server.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
-                Text(
-                    text = server.addressLine(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AeroCyan,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Options for ${server.name}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            onEdit?.let { edit ->
+                DropdownMenuItem(
+                    text = { Text("Edit") },
+                    onClick = {
+                        expanded = false
+                        edit(server)
+                    },
+                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) }
                 )
             }
-
-            if (onEdit != null || onDelete != null) {
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "More options",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        onEdit?.let {
-                            DropdownMenuItem(
-                                text = { Text("Edit") },
-                                onClick = {
-                                    showMenu = false
-                                    it(server)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                        }
-                        onDelete?.let {
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
-                                onClick = {
-                                    showMenu = false
-                                    it(server)
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
+            onDelete?.let { delete ->
+                DropdownMenuItem(
+                    text = { Text("Delete") },
+                    onClick = {
+                        expanded = false
+                        delete(server)
+                    },
+                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) }
+                )
             }
         }
     }

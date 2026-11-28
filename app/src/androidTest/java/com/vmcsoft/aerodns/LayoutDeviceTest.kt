@@ -9,7 +9,6 @@ import android.content.res.Configuration
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.*
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -62,11 +61,10 @@ class LayoutDeviceTest {
     @Test fun selectorWithManyProviders() {
         content { DnsSelectorBottomSheet(results.map { it.server }, {}, {}) }
         compose.onNodeWithText("Select DNS Server").assertIsDisplayed()
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Expand))
-            .performSemanticsAction(SemanticsActions.Expand)
-        compose.waitForIdle()
-        capture("selector-many")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Layout resolver 20"))
+        compose.onNodeWithText("Layout resolver 20").assertIsDisplayed()
         compose.onNodeWithText("Add Custom DNS").assertIsDisplayed()
+        capture("selector-many")
     }
 
     @Test fun standardEditorWithKeyboard() {
@@ -76,12 +74,13 @@ class LayoutDeviceTest {
         awaitKeyboard()
         capture("editor-standard-keyboard")
         field.assertIsDisplayed()
+        compose.onNodeWithText("Save & Connect").assertDoesNotExist()
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.waitUntil(5000) {
             ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) != true
         }
         compose.onNodeWithText("Save & Connect").assertIsDisplayed()
-        capture("editor-actions")
+        capture("editor-standard")
     }
 
     @Test fun dohEditorWithKeyboard() {
@@ -92,12 +91,13 @@ class LayoutDeviceTest {
         awaitKeyboard()
         capture("editor-doh-keyboard")
         field.assertIsDisplayed()
+        compose.onNodeWithText("Save & Connect").assertDoesNotExist()
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.waitUntil(5000) {
             ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) != true
         }
         compose.onNodeWithText("Save & Connect").assertIsDisplayed()
-        capture("editor-actions")
+        capture("editor-doh")
     }
 
     @Test fun editorWithLongStoredName() {

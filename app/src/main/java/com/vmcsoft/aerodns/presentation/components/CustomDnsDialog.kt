@@ -1,16 +1,32 @@
 package com.vmcsoft.aerodns.presentation.components
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BasicAlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -26,38 +42,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.vmcsoft.aerodns.domain.model.DnsProtocol
 import com.vmcsoft.aerodns.domain.model.DnsServer
 import com.vmcsoft.aerodns.domain.model.selectableProtocols
-import com.vmcsoft.aerodns.presentation.theme.AeroCyan
-import com.vmcsoft.aerodns.presentation.theme.MidnightSurface
-import com.vmcsoft.aerodns.presentation.theme.StrokeGray
-import com.vmcsoft.aerodns.presentation.theme.TextGray
 import kotlinx.coroutines.delay
 
+typealias SaveCustomResolver = (
+    name: String,
+    primary: String,
+    secondary: String?,
+    dohUrl: String?,
+    protocol: DnsProtocol,
+    customBootstrapIp: String?,
+    allowUntrustedCertificates: Boolean
+) -> Unit
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CustomDnsDialog(
     onDismiss: () -> Unit,
-    onSave: (
-        name: String,
-        primary: String,
-        secondary: String?,
-        dohUrl: String?,
-        protocol: DnsProtocol,
-        customBootstrapIp: String?,
-        allowUntrustedCertificates: Boolean
-    ) -> Unit,
-    onSaveAndConnect: (
-        name: String,
-        primary: String,
-        secondary: String?,
-        dohUrl: String?,
-        protocol: DnsProtocol,
-        customBootstrapIp: String?,
-        allowUntrustedCertificates: Boolean
-    ) -> Unit,
+    onSave: SaveCustomResolver,
+    onSaveAndConnect: SaveCustomResolver,
     serverToEdit: DnsServer? = null
 ) {
     val isEditMode = serverToEdit != null
@@ -208,236 +221,272 @@ fun CustomDnsDialog(
             bootstrapIpError == null
     }
 
-    AlertDialog(
+    val isDoh = selectedProtocol == DnsProtocol.DOH
+    val canSubmit = if (isDoh) dohUrl.isNotBlank() else primary.isNotBlank()
+    val colors = MaterialTheme.colorScheme
+    val fieldShape = RoundedCornerShape(12.dp)
+
+    fun submit(save: SaveCustomResolver) {
+        if (validateForm()) {
+            save(
+                name,
+                primary.takeUnless { isDoh }.orEmpty(),
+                secondary.takeIf { !isDoh && it.isNotBlank() },
+                dohUrl.takeIf { isDoh && it.isNotBlank() },
+                selectedProtocol,
+                customBootstrapIp.takeIf { isDoh && it.isNotBlank() },
+                isDoh && allowUntrustedCertificates
+            )
+        }
+    }
+
+    val keyboardVisible = WindowInsets.isImeVisible
+    BasicAlertDialog(
         onDismissRequest = ::handleDismiss,
-        title = { Text(if (isEditMode) "Edit Custom DNS" else "Add Custom DNS") },
-        text = {
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = colors.background,
+            border = BorderStroke(1.dp, colors.outline)
+        ) {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ProtocolSegmentedControl(
-                    selectedProtocol = selectedProtocol,
-                    onProtocolSelected = {
-                        selectedProtocol = it
-                        primaryError = null
-                        secondaryError = null
-                        dohUrlError = null
-                        bootstrapIpError = null
-                        if (!isEditMode && it != DnsProtocol.DOH) {
-                            allowUntrustedCertificates = false
-                        }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        if (isEditMode) "Edit Custom DNS" else "Add Custom DNS",
+                        modifier = Modifier.weight(1f).semantics { heading() },
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    IconButton(onClick = ::handleDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel")
                     }
-                )
+                }
 
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name (Optional)") },
-                    singleLine = true
-                )
-
-                if (selectedProtocol == DnsProtocol.DOH) {
-                    OutlinedTextField(
-                        value = dohUrl,
-                        onValueChange = {
-                            dohUrl = it
+                Column(
+                    modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    ProtocolSegmentedControl(
+                        selectedProtocol = selectedProtocol,
+                        onProtocolSelected = {
+                            selectedProtocol = it
+                            primaryError = null
+                            secondaryError = null
                             dohUrlError = null
-                        },
-                        modifier = Modifier.onFocusChanged { dohUrlHasFocus = it.hasFocus },
-                        label = { Text("DoH URL *") },
-                        isError = dohUrlError != null,
-                        supportingText = dohUrlError?.let { { Text(it) } },
-                        singleLine = true,
-                        placeholder = { Text("https://dns.example/dns-query") }
+                            bootstrapIpError = null
+                            if (!isEditMode && it != DnsProtocol.DOH) {
+                                allowUntrustedCertificates = false
+                            }
+                        }
                     )
 
                     OutlinedTextField(
-                        value = customBootstrapIp,
-                        onValueChange = {
-                            customBootstrapIp = it
-                            bootstrapIpError = null
-                        },
-                        modifier = Modifier.onFocusChanged { bootstrapIpHasFocus = it.hasFocus },
-                        label = { Text("Custom Bootstrap IP") },
-                        isError = bootstrapIpError != null,
-                        supportingText = {
-                            Text(bootstrapIpError ?: "Optional server IP. Without one, your network's DNS looks up the DoH hostname.")
-                        },
-                        singleLine = true,
-                        placeholder = { Text("203.0.113.10 or 2001:db8::10") }
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = fieldShape,
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Name (Optional)") },
+                        singleLine = true
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                    if (selectedProtocol == DnsProtocol.DOH) {
+                        OutlinedTextField(
+                            value = dohUrl,
+                            onValueChange = {
+                                dohUrl = it
+                                dohUrlError = null
+                            },
+                            modifier = Modifier.fillMaxWidth().onFocusChanged { dohUrlHasFocus = it.hasFocus },
+                            shape = fieldShape,
+                            label = { Text("DoH URL *") },
+                            isError = dohUrlError != null,
+                            supportingText = dohUrlError?.let { { Text(it) } },
+                            singleLine = true,
+                            placeholder = { Text("https://dns.example/dns-query") }
+                        )
+
+                        OutlinedTextField(
+                            value = customBootstrapIp,
+                            onValueChange = {
+                                customBootstrapIp = it
+                                bootstrapIpError = null
+                            },
+                            modifier = Modifier.fillMaxWidth().onFocusChanged { bootstrapIpHasFocus = it.hasFocus },
+                            shape = fieldShape,
+                            label = { Text("Custom Bootstrap IP") },
+                            isError = bootstrapIpError != null,
+                            supportingText = {
+                                Text(bootstrapIpError ?: "Optional server IP. Without one, your network's DNS looks up the DoH hostname.")
+                            },
+                            singleLine = true,
+                            placeholder = { Text("203.0.113.10 or 2001:db8::10") }
+                        )
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.surface,
+                            border = BorderStroke(1.dp, colors.outline)
                         ) {
-                            Text(
-                                text = "Allow untrusted certificates",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "Off by default. Only use this for a Custom DoH server you fully control or trust.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextGray
-                            )
-                        }
-                        Switch(
-                            checked = allowUntrustedCertificates,
-                            onCheckedChange = { checked ->
-                                if (checked) {
-                                    showUntrustedCertificateWarning = true
-                                } else {
-                                    allowUntrustedCertificates = false
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text("Allow untrusted certificates", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        "Only enable this for a resolver you control or trust.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.onSurfaceVariant
+                                    )
                                 }
+                                Switch(
+                                    checked = allowUntrustedCertificates,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "Allow untrusted certificates"
+                                    },
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            showUntrustedCertificateWarning = true
+                                        } else {
+                                            allowUntrustedCertificates = false
+                                        }
+                                    }
+                                )
                             }
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = primary,
+                            onValueChange = {
+                                primary = it
+                                primaryError = null
+                            },
+                            modifier = Modifier.fillMaxWidth().onFocusChanged { primaryHasFocus = it.hasFocus },
+                            shape = fieldShape,
+                            label = { Text("Primary DNS *") },
+                            isError = primaryError != null,
+                            supportingText = primaryError?.let { { Text(it) } },
+                            singleLine = true,
+                            placeholder = { Text("8.8.8.8 or 2001:4860:4860::8888") }
+                        )
+
+                        OutlinedTextField(
+                            value = secondary,
+                            onValueChange = {
+                                secondary = it
+                                secondaryError = null
+                            },
+                            modifier = Modifier.fillMaxWidth().onFocusChanged { secondaryHasFocus = it.hasFocus },
+                            shape = fieldShape,
+                            label = { Text("Secondary DNS (Optional)") },
+                            isError = secondaryError != null,
+                            supportingText = secondaryError?.let { { Text(it) } },
+                            singleLine = true,
+                            placeholder = { Text("8.8.4.4 or 2001:4860:4860::8844") }
                         )
                     }
-                } else {
-                    OutlinedTextField(
-                        value = primary,
-                        onValueChange = {
-                            primary = it
-                            primaryError = null
-                        },
-                        modifier = Modifier.onFocusChanged { primaryHasFocus = it.hasFocus },
-                        label = { Text("Primary DNS *") },
-                        isError = primaryError != null,
-                        supportingText = primaryError?.let { { Text(it) } },
-                        singleLine = true,
-                        placeholder = { Text("8.8.8.8 or 2001:4860:4860::8888") }
-                    )
+                }
 
-                    OutlinedTextField(
-                        value = secondary,
-                        onValueChange = {
-                            secondary = it
-                            secondaryError = null
-                        },
-                        modifier = Modifier.onFocusChanged { secondaryHasFocus = it.hasFocus },
-                        label = { Text("Secondary DNS (Optional)") },
-                        isError = secondaryError != null,
-                        supportingText = secondaryError?.let { { Text(it) } },
-                        singleLine = true,
-                        placeholder = { Text("8.8.4.4 or 2001:4860:4860::8844") }
-                    )
-                }
-            }
-            // Delay validation on focus loss so the paste/selection menu doesn't trigger
-            // immediate layout change (error text) which dismisses the menu ("blink").
-            // Primary is affected more because it's often focused when the menu is shown.
-            LaunchedEffect(primaryHasFocus) {
-                if (!primaryHasFocus) {
-                    delay(250)
-                    primaryError = when {
-                        selectedProtocol == DnsProtocol.STANDARD && primary.isBlank() -> "Primary DNS is required"
-                        selectedProtocol == DnsProtocol.STANDARD && primary.isNotBlank() && !validateIp(primary) -> "Invalid IP address"
-                        else -> null
-                    }
-                }
-            }
-            LaunchedEffect(secondaryHasFocus) {
-                if (!secondaryHasFocus) {
-                    delay(250)
-                    secondaryError = if (
-                        selectedProtocol == DnsProtocol.STANDARD &&
-                        secondary.isNotBlank() &&
-                        !validateIp(secondary)
+                if (!keyboardVisible) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        "Invalid IP address"
-                    } else {
-                        null
+                        OutlinedButton(
+                            onClick = { submit(onSave) },
+                            enabled = canSubmit,
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            shape = fieldShape
+                        ) {
+                            Text("Save")
+                        }
+                        Button(
+                            onClick = { submit(onSaveAndConnect) },
+                            enabled = canSubmit,
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            shape = fieldShape
+                        ) {
+                            Text("Save & Connect")
+                        }
                     }
                 }
-            }
-            LaunchedEffect(dohUrlHasFocus) {
-                if (!dohUrlHasFocus) {
-                    delay(250)
-                    dohUrlError = when {
-                        selectedProtocol == DnsProtocol.DOH && dohUrl.isBlank() -> "DoH URL is required"
-                        selectedProtocol == DnsProtocol.DOH && dohUrl.isNotBlank() && !validateDohUrl(dohUrl) -> {
-                            "DoH URL must start with https://"
-                        }
-                        else -> null
-                    }
-                }
-            }
-            LaunchedEffect(bootstrapIpHasFocus) {
-                if (!bootstrapIpHasFocus) {
-                    delay(250)
-                    bootstrapIpError = when {
-                        selectedProtocol == DnsProtocol.DOH &&
-                            customBootstrapIp.isNotBlank() &&
-                            !validateIp(customBootstrapIp) -> "Invalid custom bootstrap IP"
-                        else -> null
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(
-                    onClick = {
-                        if (validateForm()) {
-                            onSave(
-                                name,
-                                primary.takeIf { selectedProtocol == DnsProtocol.STANDARD }.orEmpty(),
-                                secondary.takeIf { selectedProtocol == DnsProtocol.STANDARD && it.isNotBlank() },
-                                dohUrl.takeIf { selectedProtocol == DnsProtocol.DOH && it.isNotBlank() },
-                                selectedProtocol,
-                                customBootstrapIp.takeIf {
-                                    selectedProtocol == DnsProtocol.DOH && it.isNotBlank()
-                                },
-                                selectedProtocol == DnsProtocol.DOH && allowUntrustedCertificates
-                            )
-                        }
-                    },
-                    enabled = (selectedProtocol == DnsProtocol.STANDARD && primary.isNotBlank()) ||
-                        (selectedProtocol == DnsProtocol.DOH && dohUrl.isNotBlank())
-                ) {
-                    Text("Save")
-                }
-                TextButton(
-                    onClick = {
-                        if (validateForm()) {
-                            onSaveAndConnect(
-                                name,
-                                primary.takeIf { selectedProtocol == DnsProtocol.STANDARD }.orEmpty(),
-                                secondary.takeIf { selectedProtocol == DnsProtocol.STANDARD && it.isNotBlank() },
-                                dohUrl.takeIf { selectedProtocol == DnsProtocol.DOH && it.isNotBlank() },
-                                selectedProtocol,
-                                customBootstrapIp.takeIf {
-                                    selectedProtocol == DnsProtocol.DOH && it.isNotBlank()
-                                },
-                                selectedProtocol == DnsProtocol.DOH && allowUntrustedCertificates
-                            )
-                        }
-                    },
-                    enabled = (selectedProtocol == DnsProtocol.STANDARD && primary.isNotBlank()) ||
-                        (selectedProtocol == DnsProtocol.DOH && dohUrl.isNotBlank())
-                ) {
-                    Text("Save & Connect")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = ::handleDismiss) {
-                Text("Cancel")
             }
         }
-    )
+    }
+
+    // Delay validation on focus loss so the paste/selection menu doesn't trigger
+    // immediate layout change (error text) which dismisses the menu ("blink").
+    // Primary is affected more because it's often focused when the menu is shown.
+    LaunchedEffect(primaryHasFocus) {
+        if (!primaryHasFocus) {
+            delay(250)
+            primaryError = when {
+                selectedProtocol == DnsProtocol.STANDARD && primary.isBlank() -> "Primary DNS is required"
+                selectedProtocol == DnsProtocol.STANDARD && primary.isNotBlank() && !validateIp(primary) -> "Invalid IP address"
+                else -> null
+            }
+        }
+    }
+    LaunchedEffect(secondaryHasFocus) {
+        if (!secondaryHasFocus) {
+            delay(250)
+            secondaryError = if (
+                selectedProtocol == DnsProtocol.STANDARD &&
+                secondary.isNotBlank() &&
+                !validateIp(secondary)
+            ) {
+                "Invalid IP address"
+            } else {
+                null
+            }
+        }
+    }
+    LaunchedEffect(dohUrlHasFocus) {
+        if (!dohUrlHasFocus) {
+            delay(250)
+            dohUrlError = when {
+                selectedProtocol == DnsProtocol.DOH && dohUrl.isBlank() -> "DoH URL is required"
+                selectedProtocol == DnsProtocol.DOH && dohUrl.isNotBlank() && !validateDohUrl(dohUrl) -> {
+                    "DoH URL must start with https://"
+                }
+                else -> null
+            }
+        }
+    }
+    LaunchedEffect(bootstrapIpHasFocus) {
+        if (!bootstrapIpHasFocus) {
+            delay(250)
+            bootstrapIpError = when {
+                selectedProtocol == DnsProtocol.DOH &&
+                    customBootstrapIp.isNotBlank() &&
+                    !validateIp(customBootstrapIp) -> "Invalid custom bootstrap IP"
+                else -> null
+            }
+        }
+    }
 
     // Discard confirmation dialog
     if (showDiscardConfirmation) {
         AlertDialog(
+            shape = RoundedCornerShape(24.dp),
+            containerColor = colors.surface,
             onDismissRequest = { showDiscardConfirmation = false },
             title = { Text("Discard changes?") },
             text = { Text("You have unsaved changes. Are you sure you want to discard them?") },
@@ -461,6 +510,8 @@ fun CustomDnsDialog(
 
     if (showUntrustedCertificateWarning) {
         AlertDialog(
+            shape = RoundedCornerShape(24.dp),
+            containerColor = colors.surface,
             onDismissRequest = { showUntrustedCertificateWarning = false },
             title = { Text("Security warning") },
             text = {
@@ -499,11 +550,11 @@ private fun ProtocolSegmentedControl(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MidnightSurface,
-        border = BorderStroke(1.dp, StrokeGray)
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
-        Row(modifier = Modifier.padding(3.dp)) {
+        Row(modifier = Modifier.selectableGroup().padding(4.dp)) {
             ProtocolSegment(
                 label = "Standard DNS",
                 selected = selectedProtocol == DnsProtocol.STANDARD,
@@ -527,21 +578,24 @@ private fun ProtocolSegment(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
+    val colors = MaterialTheme.colorScheme
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(6.dp),
-        color = if (selected) AeroCyan.copy(alpha = 0.16f) else MidnightSurface,
-        border = if (selected) BorderStroke(1.dp, AeroCyan) else null
+        modifier = modifier.selectable(selected, role = Role.Tab, onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) colors.primary.copy(alpha = 0.12f) else colors.surface,
+        border = if (selected) BorderStroke(1.dp, colors.primary.copy(alpha = 0.65f)) else null
     ) {
-        Text(
-            text = label,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = if (selected) AeroCyan else TextGray,
-            textAlign = TextAlign.Center
-        )
+        Box(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) colors.primary else colors.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
