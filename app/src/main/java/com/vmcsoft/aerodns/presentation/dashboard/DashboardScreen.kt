@@ -178,6 +178,7 @@ fun DashboardScreen(
             if (showDnsSelector) {
                 DnsSelectorBottomSheet(
                     servers = dnsServers,
+                    selectedServerId = selectedServer?.id,
                     onServerSelected = { viewModel.onDnsServerSelected(it) },
                     onDismiss = { viewModel.onDismissDnsSelector() },
                     onAddCustomDns = { viewModel.onShowCustomDnsDialog() },

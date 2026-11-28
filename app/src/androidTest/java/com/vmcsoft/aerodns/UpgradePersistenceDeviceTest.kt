@@ -3,11 +3,22 @@ package com.vmcsoft.aerodns
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.ParcelFileDescriptor
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
@@ -122,12 +133,41 @@ class UpgradePersistenceDeviceTest {
             assertEquals(protocol, store.getSelectedDnsProtocol())
         } else if (phase == "edit") {
             ActivityScenario.launch(MainActivity::class.java).use { activity ->
-                for ((profile, renamedProfile) in expected.zip(renamed)) {
+                compose.waitUntil(5000) {
+                    var loaded = false
                     activity.onActivity {
-                        ViewModelProvider(it)[DashboardViewModel::class.java].onShowCustomDnsDialog(profile)
+                        val viewModel = ViewModelProvider(it)[DashboardViewModel::class.java]
+                        loaded = viewModel.dnsServers.value.count { server -> server.isCustom } == expected.size &&
+                            viewModel.selectedServer.value?.id == selected
+                    }
+                    loaded
+                }
+                for ((profile, renamedProfile) in expected.zip(edited)) {
+                    val options = "Options for ${profile.name}"
+                    openChooser()
+                    compose.onNode(hasScrollToIndexAction())
+                        .performScrollToNode(hasContentDescription(options))
+                    compose.onNodeWithContentDescription(options).performClick()
+                    compose.onNodeWithText("Edit").performClick()
+                    val dohUrl = profile.dohUrl
+                    if (dohUrl != null) {
+                        compose.onNodeWithText("Standard DNS").performScrollTo().performClick()
+                        compose.onNodeWithText("DoH (HTTPS)").performClick()
+                        compose.onNode(hasSetTextAction() and hasText("DoH URL *"))
+                            .assertTextContains(dohUrl)
+                        val certificates = compose.onNodeWithContentDescription("Allow untrusted certificates")
+                        certificates.performScrollTo()
+                        if (profile.allowUntrustedCertificates) certificates.assertIsOn()
+                        else certificates.assertIsOff()
+                        if (renamedProfile.allowUntrustedCertificates && !profile.allowUntrustedCertificates) {
+                            certificates.performClick()
+                            compose.onNodeWithText("Security warning").assertIsDisplayed()
+                            compose.onNodeWithText("I understand, enable").performClick()
+                            certificates.assertIsOn()
+                        }
                     }
                     compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
-                        .performTextReplacement(renamedProfile.name)
+                        .performScrollTo().performTextReplacement(renamedProfile.name)
                     compose.onNodeWithText("Save").performClick()
                     withTimeout(5000) {
                         while (repository.getCustomServers().none {
@@ -139,8 +179,20 @@ class UpgradePersistenceDeviceTest {
                     assertEquals("Editing ${profile.id} must preserve its untouched fields",
                         renamedProfile, repository.getCustomServers().single { it.id == profile.id })
                 }
+                val original = edited.single { it.id == selected }
+                openChooser()
+                compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(original.name))
+                compose.onNode(hasText(original.name) and hasClickAction()).assertIsSelected()
+                val alternative = edited.single { it.id == "upgrade-standard" }
+                compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(alternative.name))
+                compose.onNode(hasText(alternative.name) and hasClickAction()).performClick()
+                awaitSelection(store, alternative.id, DnsProtocol.STANDARD)
+                openChooser()
+                compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(original.name))
+                compose.onNode(hasText(original.name) and hasClickAction()).performClick()
+                awaitSelection(store, selected, protocol)
+                assertEquals("Selecting saved profiles must not change them", edited, repository.getCustomServers())
             }
-            repository.updateCustomServer(edited.single { it.id == "upgrade-url-only" })
             repository.saveCustomServer(ipv6Doh)
             assertEquals(edited + ipv6Doh, repository.getCustomServers())
         }
@@ -149,6 +201,19 @@ class UpgradePersistenceDeviceTest {
             .put("profile_count", repository.getCustomServers().size).put("selected_id", selected)
             .put("protocol", protocol.name).put("package_uid", context.applicationInfo.uid)
             .toString(2))
+    }
+
+    private fun openChooser() {
+        compose.onNodeWithText("Change DNS").performClick()
+        compose.onNodeWithText("Select DNS Server").assertIsDisplayed()
+    }
+
+    private suspend fun awaitSelection(store: PreferencesDataStore, id: String, protocol: DnsProtocol) {
+        withTimeout(5000) {
+            while (store.getSelectedDnsId() != id || store.getSelectedDnsProtocol() != protocol) {
+                delay(50)
+            }
+        }
     }
 
     private fun profiles() = listOf(

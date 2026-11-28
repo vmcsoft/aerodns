@@ -197,13 +197,15 @@ names, encoded URLs, selected protocol, last-connected ID and both values of the
 legacy packet-loop preference. Missing certificate opt-in defaults to false.
 
 The driver requires unchanged preference-file bytes through replacement and dashboard
-startup, plus a stable package UID. It renames the mixed and single-protocol profiles
-through the dashboard editor and checks that every other field survives. It also edits
-the URL-only profile's certificate preference through the repository, checks an
-IPv6-only address set paired with a DoH URL, force-stops the app, and verifies
-the profiles after reopening the dashboard. Each phase is a
-separate instrumentation invocation. JSON and phase logs stay outside Git. An initially
-active VPN is not part of this scenario.
+startup, plus a stable package UID. It opens the mixed and single-protocol profiles
+from the resolver chooser, switches the editor's protocol tabs, and verifies that
+name-only edits preserve the other fields. It changes the URL-only profile's
+certificate preference through the editor's explicit confirmation and verifies the
+saved value. It selects existing profiles through the chooser and checks their IDs and
+protocols. It also checks an IPv6-only address set paired with a DoH URL and verifies
+the profiles again after force-stopping and reopening the app. Each phase is a separate
+instrumentation invocation. JSON and phase logs stay outside Git. Keep the VPN
+disconnected for this scenario.
 
 This is local debug-signature/schema compatibility. Same-version replacement does not
 test a version-code migration, Play delivery, release shrinking, platform upgrade,

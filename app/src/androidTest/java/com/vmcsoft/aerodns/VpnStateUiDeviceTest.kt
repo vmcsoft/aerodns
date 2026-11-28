@@ -22,6 +22,7 @@ import com.vmcsoft.aerodns.data.dns.DohEndpointResolver
 import com.vmcsoft.aerodns.data.dns.DnsWireMessage
 import com.vmcsoft.aerodns.data.dns.DnsTransportResult
 import com.vmcsoft.aerodns.data.local.PreferencesDataStore
+import com.vmcsoft.aerodns.data.repository.DnsRepositoryImpl
 import com.vmcsoft.aerodns.data.vpn.DnsVpnService
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvent
 import com.vmcsoft.aerodns.data.vpn.DnsVpnServiceEvents
@@ -123,31 +124,32 @@ class VpnStateUiDeviceTest {
         await { tileDescription() == "Tap to connect" }
         shell("cmd statusbar collapse")
         assertDashboard("Disconnected")
-        // The next tap should use the local fixture, independent of saved selections.
-        val profile = DnsServer(
-            config.serverId, config.displayName, primary = "",
-            dohUrl = config.dohUrl,
-            customBootstrapIp = config.customBootstrapIp,
-            allowUntrustedCertificates = config.allowUntrustedCertificates,
-            supportedProtocols = listOf(DnsProtocol.DOH),
-            isCustom = true
-        )
-        compose.activityRule.scenario.onActivity { activity ->
-            ViewModelProvider(activity)[DashboardViewModel::class.java].onDnsServerSelected(profile)
-        }
+        val name = "Saved health resolver ${System.nanoTime()}"
+        compose.onNodeWithText("Change DNS").performClick()
+        compose.onNodeWithText("Add Custom DNS").performClick()
+        compose.onNodeWithText("DoH (HTTPS)").assertIsDisplayed().performClick()
+        compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
+            .performScrollTo().performTextReplacement(name)
+        compose.onNode(hasSetTextAction() and hasText("DoH URL *"))
+            .performScrollTo().performTextReplacement(requireNotNull(config.dohUrl))
+        compose.onNode(hasSetTextAction() and hasText("Custom Bootstrap IP"))
+            .performScrollTo().performTextReplacement("127.0.0.1")
+        compose.onNodeWithContentDescription("Allow untrusted certificates")
+            .performScrollTo().assertIsOff().performClick()
+        compose.onNodeWithText("I understand, enable").performClick()
+        compose.onNodeWithText("Save & Connect").performClick()
+
+        val connected = waitState {
+            it is ConnectionState.Connected && it.server.name == name && it.dnsHealth is DnsHealth.Healthy
+        } as ConnectionState.Connected
         val preferences = PreferencesDataStore(context)
-        runBlocking {
-            withTimeout(5000) {
-                while (preferences.getSelectedDnsId() != profile.id ||
-                    preferences.getSelectedDnsProtocol() != DnsProtocol.DOH
-                ) {
-                    delay(50)
-                }
-            }
-        }
-        // Exercise the app's touch handler, rather than calling the view model directly.
-        compose.onNodeWithContentDescription("Connect/Disconnect").performTouchInput { click() }
-        waitState { it is ConnectionState.Connected && it.dnsHealth is DnsHealth.Healthy }
+        val profile = runBlocking { DnsRepositoryImpl(preferences).getCustomServers().single { it.name == name } }
+        val active = requireNotNull(connected.activeConfig)
+        assertEquals(profile.id, active.serverId)
+        assertEquals(DnsProtocol.DOH, active.protocol)
+        assertEquals(profile.dohUrl, active.dohUrl)
+        assertEquals(config.customBootstrapIp, active.customBootstrapIp)
+        assertTrue(active.allowUntrustedCertificates)
         compose.onNodeWithContentDescription("Connect/Disconnect").performTouchInput { click() }
         waitState { it is ConnectionState.Disconnected }
         await { !hasVpn() }
