@@ -186,12 +186,11 @@ class UpgradePersistenceDeviceTest {
                         }
                     }
                     compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
-                        .performScrollTo().performTextReplacement(renamedProfile.name)
+                        .performScrollTo().performClick().performTextReplacement(renamedProfile.name)
                     val save = compose.onNodeWithText("Save")
-                    if (!save.isDisplayed()) {
-                        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-                        compose.waitUntil(5000) { save.isDisplayed() }
-                    }
+                    compose.waitUntil(5000) { !save.isDisplayed() }
+                    instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+                    compose.waitUntil(5000) { save.isDisplayed() }
                     save.performClick()
                     withTimeout(5000) {
                         while (repository.getCustomServers().none {
