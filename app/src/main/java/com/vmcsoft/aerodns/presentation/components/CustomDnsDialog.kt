@@ -124,6 +124,7 @@ fun CustomDnsDialog(
     var secondaryError by remember { mutableStateOf<String?>(null) }
     var dohUrlError by remember { mutableStateOf<String?>(null) }
     var bootstrapIpError by remember { mutableStateOf<String?>(null) }
+    var pendingProtocol by remember(serverToEdit) { mutableStateOf<DnsProtocol?>(null) }
     var showDiscardConfirmation by remember { mutableStateOf(false) }
     var showUntrustedCertificateWarning by remember { mutableStateOf(false) }
     var primaryHasFocus by remember { mutableStateOf(false) }
@@ -131,24 +132,22 @@ fun CustomDnsDialog(
     var dohUrlHasFocus by remember { mutableStateOf(false) }
     var bootstrapIpHasFocus by remember { mutableStateOf(false) }
 
-    // Check if there are unsaved changes
-    val hasUnsavedChanges = remember(
-        name,
-        primary,
-        secondary,
-        dohUrl,
-        customBootstrapIp,
-        allowUntrustedCertificates,
-        selectedProtocol,
-        initialValues
-    ) {
-        name != initialValues.name ||
-            primary != initialValues.primary ||
-            secondary != initialValues.secondary ||
-            dohUrl != initialValues.dohUrl ||
-            customBootstrapIp != initialValues.customBootstrapIp ||
-            allowUntrustedCertificates != initialValues.allowUntrustedCertificates ||
-            selectedProtocol != initialValues.protocol
+    val standardChanged = primary != initialValues.primary || secondary != initialValues.secondary
+    val dohChanged = dohUrl != initialValues.dohUrl ||
+        customBootstrapIp != initialValues.customBootstrapIp ||
+        allowUntrustedCertificates != initialValues.allowUntrustedCertificates
+    val hasUnsavedChanges = name != initialValues.name || standardChanged || dohChanged ||
+        selectedProtocol != initialValues.protocol
+
+    fun switchProtocol(protocol: DnsProtocol) {
+        selectedProtocol = protocol
+        primaryError = null
+        secondaryError = null
+        dohUrlError = null
+        bootstrapIpError = null
+        if (!isEditMode && protocol != DnsProtocol.DOH) {
+            allowUntrustedCertificates = false
+        }
     }
 
     fun handleDismiss() {
@@ -279,14 +278,11 @@ fun CustomDnsDialog(
                 ) {
                     ProtocolSegmentedControl(
                         selectedProtocol = selectedProtocol,
-                        onProtocolSelected = {
-                            selectedProtocol = it
-                            primaryError = null
-                            secondaryError = null
-                            dohUrlError = null
-                            bootstrapIpError = null
-                            if (!isEditMode && it != DnsProtocol.DOH) {
-                                allowUntrustedCertificates = false
+                        onProtocolSelected = { protocol ->
+                            val activeTabChanged = if (isDoh) dohChanged else standardChanged
+                            if (protocol != selectedProtocol) {
+                                if (isEditMode && activeTabChanged) pendingProtocol = protocol
+                                else switchProtocol(protocol)
                             }
                         }
                     )
@@ -480,6 +476,40 @@ fun CustomDnsDialog(
                 else -> null
             }
         }
+    }
+
+    pendingProtocol?.let { protocol ->
+        val tab = if (isDoh) "DoH" else "Standard DNS"
+        AlertDialog(
+            shape = RoundedCornerShape(24.dp),
+            containerColor = colors.surface,
+            onDismissRequest = { pendingProtocol = null },
+            title = { Text("Unsaved $tab changes") },
+            text = { Text("Save your $tab changes before switching tabs, or discard them and switch.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (isDoh) {
+                            dohUrl = initialValues.dohUrl
+                            customBootstrapIp = initialValues.customBootstrapIp
+                            allowUntrustedCertificates = initialValues.allowUntrustedCertificates
+                        } else {
+                            primary = initialValues.primary
+                            secondary = initialValues.secondary
+                        }
+                        pendingProtocol = null
+                        switchProtocol(protocol)
+                    }
+                ) {
+                    Text("Discard and switch")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingProtocol = null }) {
+                    Text("Keep editing")
+                }
+            }
+        )
     }
 
     // Discard confirmation dialog

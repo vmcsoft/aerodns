@@ -76,7 +76,7 @@ class UpgradePersistenceDeviceTest {
         val selected = if (scenario == "doh") "upgrade-unsafe" else "upgrade-dual"
         val protocol = if (scenario == "doh") DnsProtocol.DOH else DnsProtocol.STANDARD
         val expected = profiles().map {
-            if (scenario == "legacy" && it.id == "upgrade-unsafe") it.copy(allowUntrustedCertificates = false, customBootstrapIp = null)
+            if (scenario == "legacy") it.copy(allowUntrustedCertificates = false, customBootstrapIp = null)
             else it
         }
         if (phase == "seed") {
@@ -98,8 +98,11 @@ class UpgradePersistenceDeviceTest {
         }
         val renamed = expected.map { it.copy(name = "Edited ${it.id} — DNS") }
         val edited = renamed.map {
-            if (it.id == "upgrade-url-only") it.copy(allowUntrustedCertificates = true)
-            else it
+            when (it.id) {
+                "upgrade-url-only" -> it.copy(allowUntrustedCertificates = true)
+                "upgrade-dual" -> it.copy(allowUntrustedCertificates = false)
+                else -> it
+            }
         }
         val ipv6Doh = edited.first().copy(
             id = "upgrade-ipv6-doh",
@@ -168,15 +171,26 @@ class UpgradePersistenceDeviceTest {
                             compose.onNodeWithText("Security warning").assertIsDisplayed()
                             compose.onNodeWithText("I understand, enable").performClick()
                             certificates.assertIsOn()
+                        } else if (profile.allowUntrustedCertificates && !renamedProfile.allowUntrustedCertificates) {
+                            certificates.performClick()
+                            compose.onNodeWithText("Standard DNS").performScrollTo().performClick()
+                            compose.onNodeWithText("Unsaved DoH changes").assertIsDisplayed()
+                            compose.onNodeWithText("Discard and switch").performClick()
+                            compose.onNodeWithText("DoH (HTTPS)").performClick()
+                            certificates.performScrollTo().assertIsOn().performClick()
+
+                            compose.onNodeWithText("Standard DNS").performScrollTo().performClick()
+                            compose.onNodeWithText("Unsaved DoH changes").assertIsDisplayed()
+                            compose.onNodeWithText("Keep editing").performClick()
+                            certificates.performScrollTo().assertIsOff()
                         }
                     }
                     compose.onNode(hasSetTextAction() and hasText("Name (Optional)"))
-                        .performScrollTo().performTextReplacement(renamedProfile.name)
+                        .performScrollTo().performClick().performTextReplacement(renamedProfile.name)
                     val save = compose.onNodeWithText("Save")
-                    if (!save.isDisplayed()) {
-                        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-                        compose.waitUntil(5000) { save.isDisplayed() }
-                    }
+                    compose.waitUntil(5000) { !save.isDisplayed() }
+                    instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+                    compose.waitUntil(5000) { save.isDisplayed() }
                     save.performClick()
                     withTimeout(5000) {
                         while (repository.getCustomServers().none {
@@ -238,6 +252,7 @@ class UpgradePersistenceDeviceTest {
     private fun profiles() = listOf(
         DnsServer("upgrade-dual", "Upgrade DNS — Tiếng Việt 日本語", "192.0.2.53", "198.51.100.53",
             "2001:db8::53", "192.0.2.54", "https://resolver.example/dns-query?mode=family&x=%2F",
+            allowUntrustedCertificates = true,
             supportedProtocols = listOf(DnsProtocol.STANDARD, DnsProtocol.DOH), isCustom = true),
         DnsServer("upgrade-url-only", "Strict URL only " + "長".repeat(256), "",
             dohUrl = "https://dns.example/dns-query?policy=a%26b",

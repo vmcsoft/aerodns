@@ -147,15 +147,14 @@ class VpnStateUiDeviceTest {
         compose.onNode(hasSetTextAction() and hasText("DoH URL *"))
             .performScrollTo().performTextReplacement(requireNotNull(config.dohUrl))
         compose.onNode(hasSetTextAction() and hasText("Custom Bootstrap IP"))
-            .performScrollTo().performTextReplacement("127.0.0.1")
+            .performScrollTo().performClick().performTextReplacement("127.0.0.1")
+        val saveAndConnect = compose.onNodeWithText("Save & Connect")
+        compose.waitUntil(5000) { !saveAndConnect.isDisplayed() }
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5000) { saveAndConnect.isDisplayed() }
         compose.onNodeWithContentDescription("Allow untrusted certificates")
             .performScrollTo().assertIsOff().performClick()
         compose.onNodeWithText("I understand, enable").performClick()
-        val saveAndConnect = compose.onNodeWithText("Save & Connect")
-        if (!saveAndConnect.isDisplayed()) {
-            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-            compose.waitUntil(5000) { saveAndConnect.isDisplayed() }
-        }
         saveAndConnect.performClick()
 
         val connected = waitState {
